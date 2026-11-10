@@ -507,6 +507,7 @@ internal sealed class Desktop
     }
 
     internal void RefreshClock() => tray.Refresh();
+    internal void RefreshInputLanguage(nint window) => tray.RefreshInputLanguage(Native.InputLanguage(window));
     internal void RefreshTray() => trayIcons.Refresh();
 
     internal void PlaceMenu(Rect area)

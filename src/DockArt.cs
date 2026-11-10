@@ -35,13 +35,16 @@ internal static class DockArt
             switch (kind)
             {
                 case "explorer.exe":
-                    Base("#FF7DE6FF", "#FF0874E8");
-                    dc.PushClip(new RectangleGeometry(new Rect(2, 2, 60, 60), 14, 14));
-                    Shape("M34,2 H63 V63 H30 Q37,43 29,33 Q24,23 34,2", Gradient("#FFF0F9FF", "#FF99D6FF"));
-                    dc.Pop();
-                    Line("M32,7 Q27,23 30,33 H37 L34,49", "#FF185B98", 1.5);
-                    Line("M17,23 V30 M46,23 V30", "#FF114A80", 2);
-                    Shape("M15,39 Q31,50 49,37 Q34,53 18,45 Z", Paint("#FF10487C"));
+                    Base("#FFEAF5FF", "#FFA7C5E5");
+                    Shape("M9,24 Q9,20 13,20 H23 Q25,20 27,22 L30,25 H50 Q55,25 55,30 V49 Q55,54 50,54 H14 Q9,54 9,49 Z",
+                        Paint("#33284F86"));
+                    Shape("M9,19 Q9,15 13,15 H23 Q25,15 27,17 L30,20 H51 Q55,20 55,24 V45 Q55,50 50,50 H14 Q9,50 9,45 Z",
+                        Gradient("#FF67C9FE", "#FF1361CC"), "#FF3187D9", 0.8);
+                    Shape("M13,24 Q13,22 15,22 H50 Q52,22 52,24 V30 H13 Z", Paint("#FFDDF5FF"));
+                    Shape("M8,29 Q8,25 12,25 H51 Q56,25 56,30 L54,46 Q53,50 49,50 H15 Q11,50 10,46 Z",
+                        Gradient("#FF5DDBFF", "#FF228BEB"), "#FF238ADC", 0.8);
+                    Line("M12,28 H52", "#A9D8F7FF", 1);
+                    dc.DrawRoundedRectangle(Paint("#A9E0F5FF"), null, new Rect(27, 36, 10, 3), 1.5, 1.5);
                     break;
                 case "shell:AppsFolder":
                     Base("#FFFFFFFF", "#FFD8E3E9");
@@ -78,16 +81,31 @@ internal static class DockArt
                     Line("M14,18 L25,26 L14,34 M29,35 H42", "#FFF3F4F7", 2.5);
                     break;
                 case "ms-settings:":
-                    Base("#FFDADDE1", "#FF737B84");
-                    for (int index = 0; index < 16; index++)
+                    Base("#FF626D80", "#FF262C39");
+                    var gear = new StreamGeometry { FillRule = FillRule.EvenOdd };
+                    using (var path = gear.Open())
                     {
-                        dc.PushTransform(new RotateTransform(index * 22.5, 32, 32));
-                        dc.DrawRoundedRectangle(Gradient("#FFF1F3F5", "#FF7B8591"), new Pen(Paint("#FF555E68"), 0.5), new Rect(28.5, 7, 7, 12), 1, 1);
-                        dc.Pop();
+                        // Eight broad teeth read clearly at Dock sizes.
+                        double[] radii = [18.5, 18.5, 23, 23, 18.5];
+                        double[] angles = [-0.5, -0.28, -0.18, 0.18, 0.28];
+                        for (int tooth = 0; tooth < 8; tooth++)
+                        {
+                            for (int corner = 0; corner < angles.Length; corner++)
+                            {
+                                double angle = (tooth + angles[corner]) * Math.PI / 4;
+                                var point = new Point(32 + radii[corner] * Math.Sin(angle), 32 - radii[corner] * Math.Cos(angle));
+                                if (tooth == 0 && corner == 0) path.BeginFigure(point, true, true);
+                                else path.LineTo(point, true, false);
+                            }
+                        }
                     }
-                    dc.DrawEllipse(Gradient("#FFF2F4F8", "#FF535C68"), new Pen(Paint("#FF555E68"), 1), new Point(32, 32), 20, 20);
-                    dc.DrawEllipse(Paint("#FF4A535D"), new Pen(Paint("#FFE6E9EB"), 2), new Point(32, 32), 13, 13);
-                    dc.DrawEllipse(Gradient("#FFABB4C0", "#FF4D5662"), new Pen(Paint("#FF333D49"), 1), new Point(32, 32), 6, 6);
+                    var center = new Point(32, 32);
+                    var metal = new CombinedGeometry(GeometryCombineMode.Exclude, gear, new EllipseGeometry(center, 12, 12));
+                    dc.PushTransform(new TranslateTransform(0, 2));
+                    dc.DrawGeometry(Paint("#750B1019"), null, metal);
+                    dc.Pop();
+                    dc.DrawGeometry(Gradient("#FFF8FCFF", "#FF9CAABF"), new Pen(Paint("#AFF8FCFF"), 0.8) { LineJoin = PenLineJoin.Round }, metal);
+                    dc.DrawEllipse(null, new Pen(Paint("#94F1F6FF"), 0.9), center, 15.4, 15.4);
                     break;
                 case "shell:Downloads":
                     Shape("M5,19 Q5,15 9,15 H25 L31,20 H55 Q59,20 59,24 V55 Q59,59 55,59 H9 Q5,59 5,55 Z", Gradient("#FF91E0FF", "#FF2188DA"), "#FF2A89C9", 0.8);

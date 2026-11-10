@@ -62,6 +62,9 @@ internal static class Native
     private static extern uint GetWindowThreadProcessId(nint window, out uint process);
 
     [DllImport("user32.dll")]
+    private static extern nint GetKeyboardLayout(uint thread);
+
+    [DllImport("user32.dll")]
     private static extern bool IsZoomed(nint window);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
@@ -134,6 +137,13 @@ internal static class Native
     }
 
     internal static uint WindowProcessId(nint window) => window != 0 && GetWindowThreadProcessId(window, out uint pid) != 0 ? pid : 0;
+
+    internal static ushort InputLanguage(nint window)
+    {
+        uint thread = window == 0 ? 0 : GetWindowThreadProcessId(window, out _);
+        // A zero thread ID would return Luma's own layout instead of the foreground layout.
+        return thread == 0 ? (ushort)0 : unchecked((ushort)GetKeyboardLayout(thread));
+    }
 
     internal static string? ProcessImage(uint id)
     {

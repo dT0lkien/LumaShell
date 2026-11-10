@@ -149,6 +149,7 @@ internal sealed class App : Application
             desktop.RefreshClock();
         }
         else SetVisible(desktop.MenuBar, showChrome);
+        if (showChrome) desktop.RefreshInputLanguage(underlying);
         if (showChrome && (NearDock() || desktop.Interacting)) keepDockUntil = DateTimeOffset.UtcNow.AddMilliseconds(850);
         bool showDock = showChrome && !screenshots.Busy && !taskbar.Revealing &&
             (preferences.DockAlways || onDesktop || DateTimeOffset.UtcNow < keepDockUntil);

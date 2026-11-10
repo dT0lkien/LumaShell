@@ -14,6 +14,7 @@ internal sealed class MenuTray
     private readonly StackPanel bar = new() { Orientation = Orientation.Horizontal };
     private readonly Popup popup = new() { Placement = PlacementMode.Bottom, StaysOpen = false, AllowsTransparency = true };
     private readonly TextBlock date = Text("", 12, bold: true);
+    private readonly TextBlock inputLanguage = Text("", 11, bold: true);
     private readonly TextBlock battery = Text("", 12);
     private readonly TextBlock details = Text("", 12, Muted);
     private readonly TextBlock sound = Text("Звук", 12, bold: true);
@@ -22,11 +23,17 @@ internal sealed class MenuTray
     private readonly Slider volume = new() { Minimum = 0, Maximum = 1, Width = 164, Margin = new Thickness(0, 3, 0, 0) };
     private readonly FrameworkElement networkIcon;
     private bool settingVolume;
+    private ushort displayedLanguage;
 
     internal FrameworkElement View => bar;
 
     internal MenuTray(Action showNotifications, Action appTray, Action update, Updates release)
     {
+        inputLanguage.Margin = new Thickness(4, 0, 4, 0);
+        inputLanguage.MinWidth = 26;
+        inputLanguage.TextAlignment = TextAlignment.Center;
+        inputLanguage.Visibility = Visibility.Collapsed;
+        bar.Children.Add(inputLanguage);
         networkIcon = Icon("M2,6 Q10,-1 18,6 M5,9 Q10,5 15,9 M8,12 Q10,10 12,12 M10,15 L10.1,15", 16);
         bar.Children.Add(Button(networkIcon, "Сеть", () => Desktop.Launch("ms-settings:network"), Brushes.Transparent, 6));
         battery.Margin = new Thickness(6, 0, 4, 0);
@@ -98,6 +105,25 @@ internal sealed class MenuTray
         networkIcon.Opacity = connected ? 1 : 0.48;
         details.Text = (connected ? "Сеть доступна" : "Нет сети") + (charge is null ? "" : $"   ·   {charge}");
         if (popup.IsOpen) RefreshAudio();
+    }
+
+    internal void RefreshInputLanguage(ushort language)
+    {
+        if (language == displayedLanguage) return;
+        displayedLanguage = language;
+        inputLanguage.Visibility = Visibility.Collapsed;
+        if (language == 0) return;
+
+        try
+        {
+            var culture = CultureInfo.GetCultureInfo(language);
+            inputLanguage.Text = culture.TwoLetterISOLanguageName.ToUpperInvariant();
+            string label = $"Язык ввода: {culture.DisplayName}";
+            inputLanguage.ToolTip = label;
+            System.Windows.Automation.AutomationProperties.SetName(inputLanguage, label);
+            inputLanguage.Visibility = Visibility.Visible;
+        }
+        catch (CultureNotFoundException) { }
     }
 
     private void RefreshAudio()
