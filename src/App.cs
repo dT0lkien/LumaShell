@@ -12,7 +12,8 @@ internal sealed class App : Application
 {
     private Preferences preferences = null!;
     private Screenshots screenshots = null!;
-    private SnipShortcut snip = null!;
+    private ShellShortcuts shortcuts = null!;
+    private Launcher launcher = null!;
     private Activity activity = null!;
     private Prism prism = null!;
     private Island island = null!;
@@ -53,11 +54,12 @@ internal sealed class App : Application
         taskbar = new Taskbar();
         Taskbar.Recover();
         updates = new Updates();
-        snip = new SnipShortcut(Dispatcher, screenshots.Begin);
-        if (preferences.ReplaceSnip && !snip.Enable()) preferences.ReplaceSnip = false;
+        launcher = new Launcher();
+        shortcuts = new ShellShortcuts(Dispatcher, screenshots.Begin, ToggleLauncher);
+        if (!shortcuts.Configure(preferences.ReplaceSnip, preferences.WinLauncher)) preferences.ReplaceSnip = preferences.WinLauncher = false;
         island = new Island(screenshots, activity, prism, preferences, ToggleSnip);
         desktop = new Desktop(preferences, tab => OpenIsland(tab), screenshots.Begin, screenshots.OpenFolder, CloseFromMenu,
-            taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates);
+            taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher, ToggleWin);
         topBar = new TopBar(desktop.MenuBar);
         islandHandle = new WindowInteropHelper(island.Window).EnsureHandle();
         HwndSource.FromHwnd(islandHandle).AddHook(WindowMessage);
@@ -82,6 +84,7 @@ internal sealed class App : Application
         prism.Refresh();
         if (Updates.ReadResult() is { } updateResult) island.Flash(updateResult);
         CreateTray();
+        desktop.RefreshTray();
         ticker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         ticker.Tick += (_, _) => Tick();
         ticker.Start();
@@ -99,6 +102,7 @@ internal sealed class App : Application
         }
         if (ticks % 10 == 0) island.RefreshMedia();
         if (ticks % 15 == 0) activity.Refresh();
+        if (ticks % 20 == 0 && desktop.MenuBar.IsVisible) desktop.RefreshTray();
         if (ticks % 25 == 0 && preferences.Chrome && preferences.HideWindowsTaskbar) taskbar.SetEnabled(true);
         if (ticks % 30 == 0) prism.Refresh();
         if (ticks % 50 == 0) desktop.RefreshClock();
@@ -131,6 +135,8 @@ internal sealed class App : Application
         bool onDesktop = Native.IsDesktop(underlying);
         fullscreen = !onDesktop && Native.CoversPrimaryMonitor(underlying);
         bool showChrome = preferences.Chrome && !fullscreen;
+        shortcuts.LauncherAvailable = showChrome && !screenshots.Busy;
+        if (!shortcuts.LauncherAvailable) launcher.Close();
         if (showChrome && !desktop.MenuBar.IsVisible)
         {
             desktop.MenuBar.Show();
@@ -139,9 +145,9 @@ internal sealed class App : Application
         }
         else SetVisible(desktop.MenuBar, showChrome);
         if (showChrome && (NearDock() || desktop.Interacting)) keepDockUntil = DateTimeOffset.UtcNow.AddMilliseconds(850);
-        bool showDock = showChrome && !screenshots.Busy &&
+        bool showDock = showChrome && !screenshots.Busy && !taskbar.Revealing &&
             (preferences.DockAlways || onDesktop || DateTimeOffset.UtcNow < keepDockUntil);
-        desktop.SetDockVisible(showDock, fullscreen || screenshots.Busy || !preferences.Chrome);
+        desktop.SetDockVisible(showDock, fullscreen || screenshots.Busy || !preferences.Chrome || taskbar.Revealing);
         if ((fullscreen || screenshots.Busy) && island.Window.IsVisible) island.Collapse();
         SetVisible(island.Window, !fullscreen && !screenshots.Busy);
     }
@@ -180,11 +186,30 @@ internal sealed class App : Application
 
     private void ToggleSnip()
     {
-        if (snip.Enabled) snip.Dispose();
-        else if (!snip.Enable()) island.Flash("Windows не дала подключить Win+Shift+S");
-        preferences.ReplaceSnip = snip.Enabled;
+        if (!shortcuts.Configure(!preferences.ReplaceSnip, preferences.WinLauncher))
+        {
+            island.Flash("Windows не дала подключить Win+Shift+S");
+            return;
+        }
+        preferences.ReplaceSnip = shortcuts.Snip;
         preferences.Save();
         island.RefreshScreenshots();
+    }
+
+    private void ToggleLauncher()
+    {
+        if (shortcuts.LauncherAvailable) launcher.Toggle(lastArea);
+    }
+
+    private void ToggleWin()
+    {
+        if (!shortcuts.Configure(preferences.ReplaceSnip, !preferences.WinLauncher))
+        {
+            island.Flash("Windows не дала подключить клавишу Win");
+            return;
+        }
+        preferences.WinLauncher = shortcuts.Launcher;
+        preferences.Save();
     }
 
     private void UpdateFromMenu()
@@ -285,7 +310,7 @@ internal sealed class App : Application
     {
         ticker?.Stop();
         if (screenshots is not null) screenshots.StateChanged -= RefreshVisibility;
-        snip?.Dispose();
+        shortcuts?.Dispose();
         topBar?.Dispose();
         taskbar?.Dispose();
         updates?.Dispose();

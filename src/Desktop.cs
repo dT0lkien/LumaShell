@@ -29,9 +29,12 @@ internal sealed class Desktop
     private readonly Preferences settings;
     private readonly bool animate = SystemParameters.ClientAreaAnimation;
     private readonly MenuTray tray;
-    private readonly List<MagnifyingTile> magnifying = [];
+    private readonly TrayIcons trayIcons;
+    private readonly List<DockSlot> slots = [];
     private readonly DispatcherTimer motion = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly TranslateTransform dockSlide = new();
+    private readonly ScaleTransform glassWidth = new();
+    private readonly Action openLauncher;
     private double? hoverX;
     private bool dockVisible;
     private readonly List<Pin> defaults;
@@ -45,17 +48,22 @@ internal sealed class Desktop
     internal bool Interacting => dock.IsMouseOver || Launcher.IsActive;
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
-        Action nativeTray, Action toggleTaskbar, Action update, Updates releases)
+        Action nativeTray, Action toggleTaskbar, Action update, Updates releases, Action openLauncher, Action toggleWin)
     {
         this.settings = settings;
+        this.openLauncher = openLauncher;
         var menu = new DockPanel { Margin = new Thickness(12, 0, 15, 0) };
         tray = new MenuTray(() => openIsland(IslandTab.Notifications), nativeTray, update, releases);
         DockPanel.SetDock(tray.View, Dock.Right);
         menu.Children.Add(tray.View);
+        trayIcons = new TrayIcons(nativeTray);
+        DockPanel.SetDock(trayIcons.View, Dock.Right);
+        menu.Children.Add(trayIcons.View);
         var left = new StackPanel { Orientation = Orientation.Horizontal };
         left.Children.Add(Menu(Icon("M2,13 L8,2 L14,13 M5,10 L11,10", 16), "Luma", () =>
         [
-            Entry("Открыть остров", () => openIsland(IslandTab.Home)), Entry("Значки Windows", nativeTray),
+            Entry("Приложения Luma", openLauncher), Entry("Открыть остров", () => openIsland(IslandTab.Home)), Entry("Значки Windows", nativeTray),
+            Entry(settings.WinLauncher ? "Вернуть меню Windows на Win" : "Открывать приложения Luma по Win", toggleWin),
             Entry("Обновления Luma", update), Entry("Параметры Windows", () => Launch("ms-settings:")),
             new Separator(), Entry("Выйти из Luma", exit)
         ]));
@@ -91,10 +99,16 @@ internal sealed class Desktop
             new("Терминал", "cmd.exe", "", ["WindowsTerminal.exe", "cmd.exe", "OpenConsole.exe"], "#FF454653", "#FF101118", "M2,4 L18,4 L18,16 L2,16 Z M5,7 L8,10 L5,13 M10,13 L14,13"),
             new("Параметры", "ms-settings:", "", ["SystemSettings.exe"], "#FF9CA5B4", "#FF4D5361", "M10,3 L10,17 M3,10 L17,10 M5,5 L15,15 M15,5 L5,15 M14,10 A4,4 0 1 1 6,10 A4,4 0 1 1 14,10")
         ];
-        dock = Surface(Gradient("#85BAC7DE", "#CB29303D"), 23, dockRow);
-        dock.BorderBrush = Paint("#95FFFFFF");
-        dock.BorderThickness = new Thickness(1);
-        dock.Padding = new Thickness(10, 7, 10, 4);
+        var glass = Surface(Gradient("#85BAC7DE", "#CB29303D"), 23);
+        glass.BorderBrush = Paint("#95FFFFFF");
+        glass.BorderThickness = new Thickness(1);
+        glass.RenderTransformOrigin = new Point(0.5, 0.5);
+        glass.RenderTransform = glassWidth;
+        glass.IsHitTestVisible = false;
+        var frame = new Grid();
+        frame.Children.Add(glass);
+        frame.Children.Add(new Border { Padding = new Thickness(11, 8, 11, 5), Child = dockRow });
+        dock = Surface(Brushes.Transparent, 23, frame);
         dock.HorizontalAlignment = HorizontalAlignment.Center;
         dock.VerticalAlignment = VerticalAlignment.Bottom;
         dock.RenderTransformOrigin = new Point(0.5, 1);
@@ -181,7 +195,7 @@ internal sealed class Desktop
         foreground = active;
         windows = Native.OpenWindows();
         var current = windows.FirstOrDefault(item => item.Handle == active);
-        string? path = current?.Path ?? (!Native.IsDesktop(active) ? Native.Executable(active) : null);
+        string? path = current?.Path ?? (!Native.IsDesktop(active) ? Native.WindowApp(active) : null);
         activeApp.Text = path is null ? "Проводник" : Installed(path).Label;
         var visible = windows.Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(path => !defaults.Any(pin => pin.Matches(path)) && !settings.Pins.Contains(path, StringComparer.OrdinalIgnoreCase))
@@ -205,7 +219,7 @@ internal sealed class Desktop
     {
         dockDirty = false;
         ResetIcons();
-        magnifying.Clear();
+        slots.Clear();
         dockRow.Children.Clear();
         indicators.Clear();
         foreach (var pin in defaults) dockRow.Children.Add(Tile(pin));
@@ -223,7 +237,8 @@ internal sealed class Desktop
         ResizeDock();
     }
 
-    private void AddSeparator() => dockRow.Children.Add(new Border { Width = 1, Height = 42, Background = Paint("#60FFFFFF"), Margin = new Thickness(7, 0, 7, 0) });
+    private void AddSeparator() => dockRow.Children.Add(Slot(new Border { Width = 1, Height = 42,
+        Background = Paint("#60FFFFFF"), Margin = new Thickness(7, 0, 7, 0) }));
 
     private Pin Installed(string path)
     {
@@ -247,7 +262,7 @@ internal sealed class Desktop
         return pin;
     }
 
-    private Button Tile(Pin pin, bool custom = false)
+    private FrameworkElement Tile(Pin pin, bool custom = false)
     {
         UIElement icon = pin.Image is null ? Icon(pin.Glyph, 28) : new Image { Source = pin.Image, Width = 37, Height = 37 };
         var tile = Surface(Gradient(pin.Light, pin.Dark), 12, icon);
@@ -264,22 +279,14 @@ internal sealed class Desktop
         column.Children.Add(dot);
         var button = Button(column, pin.Label, () => Activate(pin), Brushes.Transparent, 4);
         button.ToolTip = new ToolTip { Content = pin.Label, Placement = PlacementMode.Top, VerticalOffset = -18 };
-        if (animate)
-        {
-            var scale = new ScaleTransform(1, 1);
-            var lift = new TranslateTransform();
-            var transform = new TransformGroup();
-            transform.Children.Add(scale);
-            transform.Children.Add(lift);
-            tile.RenderTransform = transform;
-            tile.RenderTransformOrigin = new Point(0.5, 1);
-            magnifying.Add(new(button, scale, lift));
-        }
+        var scale = new ScaleTransform(1, 1);
+        tile.RenderTransform = scale;
+        tile.RenderTransformOrigin = new Point(0.5, 1);
         button.PreviewMouseRightButtonUp += (_, args) =>
         {
             var entries = windows.Where(item => pin.Matches(item.Path)).Take(8)
                 .Select(item => (Control)Entry(Label(item.Title, 58), () => Native.FocusWindow(item.Handle))).ToList();
-            entries.Add(Entry("Открыть", () => Launch(pin.Target, pin.Arguments)));
+            entries.Add(Entry("Открыть", () => OpenPin(pin)));
             if (custom)
             {
                 bool pinned = settings.Pins.Contains(pin.Target, StringComparer.OrdinalIgnoreCase);
@@ -297,7 +304,24 @@ internal sealed class Desktop
             Context(button, entries, PlacementMode.Top).IsOpen = true;
             args.Handled = true;
         };
-        return button;
+        return Slot(button, scale);
+    }
+
+    private Grid Slot(FrameworkElement element, ScaleTransform? scale = null)
+    {
+        var slot = new Grid();
+        var offset = new TranslateTransform();
+        element.RenderTransform = offset;
+        slot.Children.Add(element);
+        slots.Add(new(slot, scale, offset));
+        return slot;
+    }
+
+    private bool OpenPin(Pin pin)
+    {
+        if (pin.Arguments != "shell:AppsFolder") return Launch(pin.Target, pin.Arguments);
+        openLauncher();
+        return true;
     }
 
     private void Activate(Pin pin)
@@ -306,7 +330,7 @@ internal sealed class Desktop
         var matches = windows.Where(item => pin.Matches(item.Path)).ToArray();
         var match = matches.FirstOrDefault(item => item.Handle != foreground) ?? matches.FirstOrDefault();
         if (match is not null && Native.FocusWindow(match.Handle)) return;
-        if (!Launch(pin.Target, pin.Arguments)) feedback.Text = "Windows не удалось открыть приложение";
+        if (!OpenPin(pin)) feedback.Text = "Windows не удалось открыть приложение";
     }
 
     private void UpdateIndicators()
@@ -329,25 +353,33 @@ internal sealed class Desktop
     private void AnimateIcons()
     {
         double total = 0;
-        foreach (var tile in magnifying)
+        foreach (var tile in slots)
         {
-            double center = tile.Button.TranslatePoint(new Point(tile.Button.ActualWidth / 2, 0), dockRow).X;
+            if (tile.Scale is null) continue;
+            double center = tile.Anchor.TranslatePoint(new Point(tile.Anchor.ActualWidth / 2, 0), dockRow).X;
             double distance = hoverX is { } pointer ? (pointer - center) / 57 : double.PositiveInfinity;
             tile.Growth = 0.38 * Math.Exp(-0.5 * distance * distance);
             total += tile.Growth * 49;
         }
         double prefix = -total / 2;
         bool changing = false;
-        foreach (var tile in magnifying)
+        foreach (var tile in slots)
         {
             double extra = tile.Growth * 49;
             double scale = 1 + tile.Growth, x = prefix + extra / 2, y = -tile.Growth * 16;
-            changing |= Math.Abs(tile.Scale.ScaleX - scale) > 0.002 || Math.Abs(tile.Offset.X - x) > 0.1;
-            tile.Scale.ScaleX = tile.Scale.ScaleY = Approach(tile.Scale.ScaleX, scale, 0.002);
+            if (tile.Scale is { } transform)
+            {
+                changing |= Math.Abs(transform.ScaleX - scale) > 0.002;
+                transform.ScaleX = transform.ScaleY = Approach(transform.ScaleX, scale, 0.002);
+            }
+            changing |= Math.Abs(tile.Offset.X - x) > 0.1 || Math.Abs(tile.Offset.Y - y) > 0.1;
             tile.Offset.X = Approach(tile.Offset.X, x, 0.1);
             tile.Offset.Y = Approach(tile.Offset.Y, y, 0.1);
             prefix += extra;
         }
+        double width = 1 + total / Math.Max(1, dock.ActualWidth);
+        changing |= Math.Abs(glassWidth.ScaleX - width) > 0.002;
+        glassWidth.ScaleX = Approach(glassWidth.ScaleX, width, 0.002);
         if (!changing) motion.Stop();
     }
 
@@ -358,9 +390,10 @@ internal sealed class Desktop
     {
         motion.Stop();
         hoverX = null;
-        foreach (var tile in magnifying)
+        glassWidth.ScaleX = 1;
+        foreach (var tile in slots)
         {
-            tile.Scale.ScaleX = tile.Scale.ScaleY = 1;
+            if (tile.Scale is { } scale) scale.ScaleX = scale.ScaleY = 1;
             tile.Offset.X = tile.Offset.Y = 0;
         }
     }
@@ -393,6 +426,7 @@ internal sealed class Desktop
     }
 
     internal void RefreshClock() => tray.Refresh();
+    internal void RefreshTray() => trayIcons.Refresh();
 
     internal void PlaceMenu(Rect area)
     {
@@ -412,7 +446,7 @@ internal sealed class Desktop
     private void ResizeDock()
     {
         double desired = indicators.Count * 57 + 62;
-        double scale = Math.Clamp((Launcher.Width - 12) / desired, 0.1, 1);
+        double scale = Math.Clamp((Launcher.Width - 12) / (desired + 55), 0.1, 1);
         dock.LayoutTransform = scale < 1 ? new ScaleTransform(scale, scale) : Transform.Identity;
     }
 
@@ -423,7 +457,7 @@ internal sealed class Desktop
             Processes.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase);
     }
 
-    private sealed record MagnifyingTile(Button Button, ScaleTransform Scale, TranslateTransform Offset)
+    private sealed record DockSlot(Grid Anchor, ScaleTransform? Scale, TranslateTransform Offset)
     {
         internal double Growth { get; set; }
     }

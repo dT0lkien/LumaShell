@@ -20,6 +20,7 @@ internal sealed class Taskbar : IDisposable
     private nint currentBar;
     private bool faulted;
     internal bool Active { get; private set; }
+    internal bool Revealing => Active && DateTime.UtcNow < revealUntil;
     internal event Action? Failed;
 
     internal void SetEnabled(bool enabled)
@@ -75,6 +76,7 @@ internal sealed class Taskbar : IDisposable
         revealUntil = DateTime.UtcNow.AddSeconds(15);
         var primary = FindWindow("Shell_TrayWnd", null);
         if (primary == 0) return;
+        if (Active) SetState(primary, GetState() & ~1u);
         foreach (var window in Bars(primary)) Native.RestoreWindow(window);
         await Task.Delay(170);
         for (int attempt = 0; attempt < 10 && Native.ShortcutModifiersDown(); attempt++) await Task.Delay(70);

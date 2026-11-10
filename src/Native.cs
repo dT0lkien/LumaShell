@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -53,6 +54,9 @@ internal static class Native
 
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumerateWindow callback, nint parameter);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(nint window, EnumerateWindow callback, nint parameter);
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(nint window, out uint process);
@@ -161,7 +165,7 @@ internal static class Native
             if (GetDwmFlag(window, 14, out int cloaked, 4) == 0 && cloaked != 0) return true;
             var title = new StringBuilder(256);
             if (GetWindowText(window, title, title.Capacity) == 0) return true;
-            var path = Executable(window);
+            var path = WindowApp(window);
             if (path is not null) windows.Add(new(window, path, title.ToString()));
             return windows.Count < 60;
         }, 0);
@@ -169,6 +173,34 @@ internal static class Native
     }
 
     internal sealed record OpenWindow(nint Handle, string Path, string Title);
+
+    internal static string? WindowApp(nint window)
+    {
+        string? path = Executable(window);
+        if (path is null) return null;
+        string name = Path.GetFileName(path).ToLowerInvariant();
+        if (name is "searchhost.exe" or "searchapp.exe" or "startmenuexperiencehost.exe" or "shellexperiencehost.exe" or
+            "textinputhost.exe" or "shellhost.exe" or "lockapp.exe") return null;
+        if (name == "applicationframehost.exe")
+        {
+            string? app = null;
+            EnumChildWindows(window, (child, _) =>
+            {
+                if (Executable(child) is not { } target || target.Equals(path, StringComparison.OrdinalIgnoreCase)) return true;
+                app = target;
+                return false;
+            }, 0);
+            return app;
+        }
+        if (name != "steamwebhelper.exe") return path;
+        var folder = Path.GetDirectoryName(path);
+        for (int level = 0; folder is not null && level < 7; level++, folder = Path.GetDirectoryName(folder))
+        {
+            string steam = Path.Combine(folder, "steam.exe");
+            if (File.Exists(steam)) return steam;
+        }
+        return null;
+    }
 
     internal static bool BelongsToCurrentProcess(nint window) => window != 0 &&
         GetWindowThreadProcessId(window, out uint process) != 0 && process == Environment.ProcessId;
