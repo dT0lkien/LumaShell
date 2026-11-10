@@ -11,7 +11,6 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Threading;
 using static LumaShell.Visuals;
 
 namespace LumaShell;
@@ -65,6 +64,8 @@ internal sealed class Launcher
         panel.BorderThickness = new Thickness(1);
         panel.Padding = new Thickness(15);
         window.Content = panel;
+        FocusManager.SetFocusedElement(window, query);
+        window.Activated += (_, _) => Keyboard.Focus(query);
         window.Deactivated += (_, _) => Close();
         window.PreviewKeyDown += (_, args) =>
         {
@@ -114,12 +115,12 @@ internal sealed class Launcher
         window.Height = Math.Min(470, area.Height - 20);
         window.Left = area.Left + (area.Width - window.Width) / 2;
         window.Top = area.Top + Math.Max(10, (area.Height - window.Height) * 0.24);
-        query.Clear();
-        Render();
         window.Show();
-        if (window.Content is FrameworkElement panel) Entrance(panel, 10, 0.98);
         window.Activate();
-        window.Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => query.Focus()));
+        if (window.IsActive) Keyboard.Focus(query);
+        if (query.Text.Length == 0) Render();
+        else query.Clear();
+        if (window.Content is FrameworkElement panel) Entrance(panel, 10, 0.98);
         if (catalog is null && !loading) Load();
     }
 

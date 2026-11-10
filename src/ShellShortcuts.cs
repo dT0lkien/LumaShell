@@ -21,6 +21,7 @@ internal sealed class ShellShortcuts : IDisposable
     internal bool Snip { get; private set; }
     internal bool Launcher { get; private set; }
     internal volatile bool LauncherAvailable;
+    internal volatile bool LauncherHotkeyRegistered;
 
     internal ShellShortcuts(Dispatcher ui, Action capture, Action openLauncher)
     {
@@ -67,7 +68,9 @@ internal sealed class ShellShortcuts : IDisposable
                 heldWin = Keyboard(data, key, false);
                 return 1;
             case WinTap.Action.Launch:
-                ui.BeginInvoke(DispatcherPriority.Normal, openLauncher);
+                // A real WM_HOTKEY gives the UI permission to activate from another app.
+                if (!LauncherHotkeyRegistered || !SendLauncherHotkey())
+                    ui.BeginInvoke(DispatcherPriority.Input, openLauncher);
                 return 1;
             case WinTap.Action.ReplayTap:
                 SendInput(2, [heldWin, Keyboard(data, key, true)], Marshal.SizeOf<Input>());
@@ -92,6 +95,17 @@ internal sealed class ShellShortcuts : IDisposable
     }
 
     private nint Next(int code, nint message, nint data) => CallNextHookEx(hook, code, message, data);
+
+    private static bool SendLauncherHotkey()
+    {
+        var down = new Input { Type = 1, Data = new() { Key = new() { Key = Native.LauncherActivationKey } } };
+        var up = down;
+        up.Data.Key.Flags = 2;
+        int size = Marshal.SizeOf<Input>();
+        uint sent = SendInput(2, [down, up], size);
+        if (sent == 1) SendInput(1, [up], size);
+        return sent != 0;
+    }
 
     private static Input Keyboard(nint data, int key, bool up) => new()
     {

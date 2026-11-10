@@ -68,6 +68,7 @@ internal sealed class App : Application
         hotkeyRegistered = Native.RegisterIslandHotkey(islandHandle);
         screenshotHotkey = Native.RegisterScreenshotHotkey(islandHandle);
         nativeTrayHotkey = Native.RegisterTrayHotkey(islandHandle);
+        UpdateLauncherHotkey();
         island.ClipboardToggleRequested += ToggleClipboard;
         island.Collapsed += RestoreFocus;
         screenshots.StateChanged += RefreshVisibility;
@@ -215,7 +216,20 @@ internal sealed class App : Application
             return;
         }
         preferences.WinLauncher = shortcuts.Launcher;
+        UpdateLauncherHotkey();
         preferences.Save();
+    }
+
+    private void UpdateLauncherHotkey()
+    {
+        if (shortcuts.LauncherHotkeyRegistered)
+        {
+            if (shortcuts.Launcher) return;
+            shortcuts.LauncherHotkeyRegistered = false;
+            Native.UnregisterHotKey(islandHandle, Native.LauncherHotkey);
+        }
+        else if (shortcuts.Launcher)
+            shortcuts.LauncherHotkeyRegistered = Native.RegisterLauncherHotkey(islandHandle);
     }
 
     private void UpdateFromMenu()
@@ -268,6 +282,11 @@ internal sealed class App : Application
         {
             handled = true;
             Dispatcher.BeginInvoke(DispatcherPriority.Normal, taskbar.Reveal);
+        }
+        if (message == Native.HotkeyMessage && wParam == Native.LauncherHotkey)
+        {
+            handled = true;
+            if (shortcuts.LauncherHotkeyRegistered) ToggleLauncher();
         }
         return 0;
     }
@@ -325,6 +344,7 @@ internal sealed class App : Application
         if (hotkeyRegistered) Native.UnregisterHotKey(islandHandle, Native.IslandHotkey);
         if (screenshotHotkey) Native.UnregisterHotKey(islandHandle, Native.ScreenshotHotkey);
         if (nativeTrayHotkey) Native.UnregisterHotKey(islandHandle, Native.TrayHotkey);
+        if (shortcuts?.LauncherHotkeyRegistered == true) Native.UnregisterHotKey(islandHandle, Native.LauncherHotkey);
         if (island?.ClipboardEnabled == true) Native.RemoveClipboardFormatListener(islandHandle);
         if (tray is not null)
         {

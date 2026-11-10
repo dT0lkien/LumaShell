@@ -13,6 +13,8 @@ internal static class Native
     internal const int IslandHotkey = 1;
     internal const int ScreenshotHotkey = 2;
     internal const int TrayHotkey = 3;
+    internal const int LauncherHotkey = 4;
+    internal const ushort LauncherActivationKey = 0x87; // F24
 
     [DllImport("user32.dll")]
     internal static extern bool AddClipboardFormatListener(nint window);
@@ -106,6 +108,7 @@ internal static class Native
     internal static bool RegisterIslandHotkey(nint window) => RegisterHotKey(window, IslandHotkey, 0x4003, 0x20);
     internal static bool RegisterScreenshotHotkey(nint window) => RegisterHotKey(window, ScreenshotHotkey, 0x4003, 0x53);
     internal static bool RegisterTrayHotkey(nint window) => RegisterHotKey(window, TrayHotkey, 0x4003, 0x42);
+    internal static bool RegisterLauncherHotkey(nint window) => RegisterHotKey(window, LauncherHotkey, 0x4000, LauncherActivationKey);
 
     internal static System.Drawing.Rectangle? PrimaryWorkArea()
     {
