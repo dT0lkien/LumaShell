@@ -238,6 +238,13 @@ internal static class Native
         return name.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd";
     }
 
+    internal static bool IsFileExplorerWindow(nint window)
+    {
+        var name = new StringBuilder(32);
+        return GetClassName(window, name, name.Capacity) != 0 &&
+            name.ToString() is "CabinetWClass" or "ExploreWClass";
+    }
+
     internal static bool CoversPrimaryMonitor(nint window)
     {
         if (window == 0) return false;

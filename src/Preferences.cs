@@ -12,6 +12,7 @@ internal sealed class Preferences
 
     public bool Chrome { get; set; } = true;
     public bool DockAlways { get; set; } = true;
+    public bool StyleExplorerFrame { get; set; } = true;
     public bool HideWindowsTaskbar { get; set; } = true;
     public bool WinLauncher { get; set; } = true;
     public bool ReplaceSnip { get; set; } = true;

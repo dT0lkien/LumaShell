@@ -30,6 +30,7 @@ internal sealed class Desktop
     private readonly bool animate = SystemParameters.ClientAreaAnimation;
     private readonly MenuTray tray;
     private readonly TrayIcons trayIcons;
+    private readonly ExplorerAppearance explorerAppearance = new();
     private readonly List<DockSlot> slots = [];
     private readonly TranslateTransform dockSlide = new();
     private readonly ScaleTransform glassWidth = new();
@@ -83,6 +84,7 @@ internal sealed class Desktop
         [Entry("Буфер Luma", () => openIsland(IslandTab.Clipboard)), Entry("Настройки буфера Windows", () => Launch("ms-settings:clipboard"))]));
         left.Children.Add(Menu("Вид", () =>
         [Entry(settings.HideWindowsTaskbar ? "Вернуть панель задач Windows" : "Скрыть панель задач Windows", toggleTaskbar),
+            Entry(settings.StyleExplorerFrame ? "Вернуть рамку Проводника Windows" : "Оформить рамку Проводника", ToggleExplorerFrame),
             Entry("Персонализация", () => Launch("ms-settings:personalization")),
             Entry("Параметры панели задач", () => Launch("ms-settings:taskbar"))]));
         left.Children.Add(Menu("Окно", WindowEntries));
@@ -217,6 +219,7 @@ internal sealed class Desktop
     {
         foreground = active;
         windows = snapshot;
+        RefreshExplorerFrame();
         activeApp.Text = path is null ? "Проводник" : Installed(path).Label;
         var visible = windows.Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(path => !defaults.Any(pin => pin.Matches(path)) && !settings.Pins.Contains(path, StringComparer.OrdinalIgnoreCase))
@@ -235,6 +238,22 @@ internal sealed class Desktop
     }
 
     private bool dockDirty;
+
+    private void ToggleExplorerFrame()
+    {
+        settings.StyleExplorerFrame = !settings.StyleExplorerFrame;
+        settings.Save();
+        RefreshExplorerFrame();
+    }
+
+    private void RefreshExplorerFrame()
+    {
+        if (settings.Chrome && settings.StyleExplorerFrame && !SystemParameters.HighContrast)
+            explorerAppearance.Refresh(windows, foreground);
+        else RestoreExplorerFrame();
+    }
+
+    internal void RestoreExplorerFrame() => explorerAppearance.Restore();
 
     private void RebuildDock()
     {

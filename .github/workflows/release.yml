@@ -42,8 +42,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $rid" }
             Copy-Item "artifacts/$rid/LumaShell.exe" "release/LumaShell-$rid.exe"
           }
-          Copy-Item assets/Luma-Wallpaper.png, assets/Luma-Finder.yaml, README.md release
-          Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe', '.png', '.yaml' } | ForEach-Object {
+          Copy-Item assets/Luma-Wallpaper.png, README.md release
+          Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe', '.png' } | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
           } | Set-Content release/SHA256SUMS.txt -Encoding ascii

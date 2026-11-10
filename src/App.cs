@@ -302,6 +302,7 @@ internal sealed class App : Application
         chrome.CheckedChanged += (_, _) =>
         {
             preferences.Chrome = chrome.Checked;
+            if (!preferences.Chrome) desktop.RestoreExplorerFrame();
             preferences.Save();
             topBar.Enable(preferences.Chrome);
             taskbar.SetEnabled(preferences.Chrome && preferences.HideWindowsTaskbar);
@@ -334,6 +335,7 @@ internal sealed class App : Application
     protected override void OnExit(ExitEventArgs args)
     {
         ticker?.Stop();
+        desktop?.RestoreExplorerFrame();
         if (screenshots is not null) screenshots.StateChanged -= RefreshVisibility;
         shortcuts?.Dispose();
         topBar?.Dispose();
