@@ -2,24 +2,27 @@ namespace LumaShell;
 
 internal sealed class WinTap
 {
-    private int candidate;
+    internal enum Action { Pass, Hold, Launch, ReplayTap, ReplayChord }
+    private int pending;
 
-    internal bool Handle(int key, bool down, bool alreadyModified, bool repeating = false)
+    internal Action Handle(int key, bool down, bool intercept, bool alreadyModified)
     {
-        if (key is not (0x5B or 0x5C))
+        if (pending == 0)
         {
-            if (down) candidate = 0;
-            return false;
+            if (!intercept || !down || alreadyModified || key is not (0x5B or 0x5C)) return Action.Pass;
+            pending = key;
+            return Action.Hold;
         }
-        if (down)
-        {
-            if (!repeating) candidate = alreadyModified ? 0 : key;
-            return false;
-        }
-        bool tap = candidate == key;
-        candidate = 0;
-        return tap;
-    }
 
-    internal void Reset() => candidate = 0;
+        if (key == pending)
+        {
+            if (down) return Action.Hold;
+            pending = 0;
+            return intercept ? Action.Launch : Action.ReplayTap;
+        }
+
+        if (!down) return Action.Pass;
+        pending = 0;
+        return Action.ReplayChord;
+    }
 }

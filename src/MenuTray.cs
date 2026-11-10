@@ -25,7 +25,7 @@ internal sealed class MenuTray
 
     internal FrameworkElement View => bar;
 
-    internal MenuTray(Action showNotifications, Action nativeTray, Action update, Updates release)
+    internal MenuTray(Action showNotifications, Action appTray, Action update, Updates release)
     {
         networkIcon = Icon("M2,6 Q10,-1 18,6 M5,9 Q10,5 15,9 M8,12 Q10,10 12,12 M10,15 L10.1,15", 16);
         bar.Children.Add(Button(networkIcon, "Сеть", () => Desktop.Launch("ms-settings:network"), Brushes.Transparent, 6));
@@ -66,7 +66,7 @@ internal sealed class MenuTray
         menu.Children.Add(TrayButton("Сеть и Интернет", () => Desktop.Launch("ms-settings:network")));
         menu.Children.Add(TrayButton("Уведомления Luma", showNotifications));
         menu.Children.Add(TrayButton("Питание и батарея", () => Desktop.Launch("ms-settings:powersleep")));
-        menu.Children.Add(TrayButton("Значки приложений Windows", nativeTray));
+        menu.Children.Add(TrayButton("Трей приложений Luma", appTray));
         var updateButton = Button(updates, "Обновления Luma", () => { popup.IsOpen = false; update(); }, Card);
         updateButton.Margin = new Thickness(0, 7, 0, 0);
         updateButton.HorizontalContentAlignment = HorizontalAlignment.Left;

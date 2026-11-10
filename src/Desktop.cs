@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -12,7 +13,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
-using System.Windows.Threading;
 using static LumaShell.Visuals;
 
 namespace LumaShell;
@@ -31,11 +31,15 @@ internal sealed class Desktop
     private readonly MenuTray tray;
     private readonly TrayIcons trayIcons;
     private readonly List<DockSlot> slots = [];
-    private readonly DispatcherTimer motion = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly TranslateTransform dockSlide = new();
     private readonly ScaleTransform glassWidth = new();
     private readonly Action openLauncher;
     private double? hoverX;
+    private bool rendering;
+    private bool targetsDirty;
+    private bool scanningWindows;
+    private TimeSpan? lastFrame;
+    private double targetGlassWidth = 1;
     private bool dockVisible;
     private readonly List<Pin> defaults;
     private readonly Dictionary<string, Pin> installed = new(StringComparer.OrdinalIgnoreCase);
@@ -53,16 +57,17 @@ internal sealed class Desktop
         this.settings = settings;
         this.openLauncher = openLauncher;
         var menu = new DockPanel { Margin = new Thickness(12, 0, 15, 0) };
-        tray = new MenuTray(() => openIsland(IslandTab.Notifications), nativeTray, update, releases);
+        trayIcons = new TrayIcons();
+        tray = new MenuTray(() => openIsland(IslandTab.Notifications), trayIcons.Show, update, releases);
         DockPanel.SetDock(tray.View, Dock.Right);
         menu.Children.Add(tray.View);
-        trayIcons = new TrayIcons(nativeTray);
         DockPanel.SetDock(trayIcons.View, Dock.Right);
         menu.Children.Add(trayIcons.View);
         var left = new StackPanel { Orientation = Orientation.Horizontal };
         left.Children.Add(Menu(Icon("M2,13 L8,2 L14,13 M5,10 L11,10", 16), "Luma", () =>
         [
-            Entry("Приложения Luma", openLauncher), Entry("Открыть остров", () => openIsland(IslandTab.Home)), Entry("Значки Windows", nativeTray),
+            Entry("Приложения Luma", openLauncher), Entry("Открыть остров", () => openIsland(IslandTab.Home)),
+            Entry("Временно показать панель Windows", nativeTray),
             Entry(settings.WinLauncher ? "Вернуть меню Windows на Win" : "Открывать приложения Luma по Win", toggleWin),
             Entry("Обновления Luma", update), Entry("Параметры Windows", () => Launch("ms-settings:")),
             new Separator(), Entry("Выйти из Luma", exit)
@@ -113,9 +118,9 @@ internal sealed class Desktop
         dock.VerticalAlignment = VerticalAlignment.Bottom;
         dock.RenderTransformOrigin = new Point(0.5, 1);
         dock.RenderTransform = dockSlide;
-        motion.Tick += (_, _) => AnimateIcons();
         dock.MouseMove += (_, args) => MovePointer(args.GetPosition(dockRow).X);
         dock.MouseLeave += (_, _) => MovePointer(null);
+        dockRow.SizeChanged += (_, _) => { if (hoverX is not null) targetsDirty = true; };
         Launcher.IsVisibleChanged += (_, _) => { if (!Launcher.IsVisible) ResetIcons(); };
         dock.AllowDrop = true;
         dock.DragOver += (_, args) =>
@@ -190,12 +195,28 @@ internal sealed class Desktop
 
     private static bool IsExecutable(string path) => path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(path);
 
-    internal void RefreshWindows(nint active)
+    internal async void RefreshWindows(nint active)
+    {
+        if (scanningWindows) return;
+        scanningWindows = true;
+        try
+        {
+            var snapshot = await Task.Run(() =>
+            {
+                var items = Native.OpenWindows();
+                var path = items.FirstOrDefault(item => item.Handle == active)?.Path ??
+                    (!Native.IsDesktop(active) ? Native.WindowApp(active) : null);
+                return (Items: items, ActivePath: path);
+            });
+            ApplyWindows(active, snapshot.Items, snapshot.ActivePath);
+        }
+        finally { scanningWindows = false; }
+    }
+
+    private void ApplyWindows(nint active, List<Native.OpenWindow> snapshot, string? path)
     {
         foreground = active;
-        windows = Native.OpenWindows();
-        var current = windows.FirstOrDefault(item => item.Handle == active);
-        string? path = current?.Path ?? (!Native.IsDesktop(active) ? Native.WindowApp(active) : null);
+        windows = snapshot;
         activeApp.Text = path is null ? "Проводник" : Installed(path).Label;
         var visible = windows.Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(path => !defaults.Any(pin => pin.Matches(path)) && !settings.Pins.Contains(path, StringComparer.OrdinalIgnoreCase))
@@ -345,13 +366,17 @@ internal sealed class Desktop
 
     private void MovePointer(double? x)
     {
-        if (!animate) return;
+        if (!animate || x == hoverX) return;
         hoverX = x;
-        motion.Start();
+        targetsDirty = true;
+        if (rendering) return;
+        rendering = true;
+        CompositionTarget.Rendering += AnimateIcons;
     }
 
-    private void AnimateIcons()
+    private void CalculateTargets()
     {
+        targetsDirty = false;
         double total = 0;
         foreach (var tile in slots)
         {
@@ -362,33 +387,53 @@ internal sealed class Desktop
             total += tile.Growth * 49;
         }
         double prefix = -total / 2;
-        bool changing = false;
         foreach (var tile in slots)
         {
             double extra = tile.Growth * 49;
-            double scale = 1 + tile.Growth, x = prefix + extra / 2, y = -tile.Growth * 16;
+            tile.TargetX = prefix + extra / 2;
+            prefix += extra;
+        }
+        targetGlassWidth = 1 + total / Math.Max(1, dock.ActualWidth);
+    }
+
+    private void AnimateIcons(object? sender, EventArgs args)
+    {
+        if (args is not RenderingEventArgs frame || lastFrame == frame.RenderingTime) return;
+        double elapsed = lastFrame is { } previous ? (frame.RenderingTime - previous).TotalMilliseconds : 8;
+        lastFrame = frame.RenderingTime;
+        double blend = 1 - Math.Exp(-Math.Clamp(elapsed, 0, 64) / 52);
+        if (targetsDirty) CalculateTargets();
+        bool changing = false;
+        foreach (var tile in slots)
+        {
+            double scale = 1 + tile.Growth, x = tile.TargetX, y = -tile.Growth * 16;
             if (tile.Scale is { } transform)
             {
                 changing |= Math.Abs(transform.ScaleX - scale) > 0.002;
-                transform.ScaleX = transform.ScaleY = Approach(transform.ScaleX, scale, 0.002);
+                transform.ScaleX = transform.ScaleY = Approach(transform.ScaleX, scale, 0.002, blend);
             }
             changing |= Math.Abs(tile.Offset.X - x) > 0.1 || Math.Abs(tile.Offset.Y - y) > 0.1;
-            tile.Offset.X = Approach(tile.Offset.X, x, 0.1);
-            tile.Offset.Y = Approach(tile.Offset.Y, y, 0.1);
-            prefix += extra;
+            tile.Offset.X = Approach(tile.Offset.X, x, 0.1, blend);
+            tile.Offset.Y = Approach(tile.Offset.Y, y, 0.1, blend);
         }
-        double width = 1 + total / Math.Max(1, dock.ActualWidth);
-        changing |= Math.Abs(glassWidth.ScaleX - width) > 0.002;
-        glassWidth.ScaleX = Approach(glassWidth.ScaleX, width, 0.002);
-        if (!changing) motion.Stop();
+        changing |= Math.Abs(glassWidth.ScaleX - targetGlassWidth) > 0.002;
+        glassWidth.ScaleX = Approach(glassWidth.ScaleX, targetGlassWidth, 0.002, blend);
+        if (!changing) StopRendering();
     }
 
-    private static double Approach(double current, double target, double precision) => Math.Abs(target - current) <= precision
-        ? target : current + (target - current) * 0.24;
+    private static double Approach(double current, double target, double precision, double blend) => Math.Abs(target - current) <= precision
+        ? target : current + (target - current) * blend;
+
+    private void StopRendering()
+    {
+        if (rendering) CompositionTarget.Rendering -= AnimateIcons;
+        rendering = false;
+        lastFrame = null;
+    }
 
     private void ResetIcons()
     {
-        motion.Stop();
+        StopRendering();
         hoverX = null;
         glassWidth.ScaleX = 1;
         foreach (var tile in slots)
@@ -460,5 +505,6 @@ internal sealed class Desktop
     private sealed record DockSlot(Grid Anchor, ScaleTransform? Scale, TranslateTransform Offset)
     {
         internal double Growth { get; set; }
+        internal double TargetX { get; set; }
     }
 }

@@ -4,6 +4,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
 
@@ -65,21 +66,26 @@ internal static class Visuals
         TextTrimming = TextTrimming.CharacterEllipsis
     };
 
-    internal static Window Overlay(string title, double width, double height) => new()
+    internal static Window Overlay(string title, double width, double height)
     {
-        Title = title,
-        Width = width,
-        Height = height,
-        WindowStyle = WindowStyle.None,
-        ResizeMode = ResizeMode.NoResize,
-        Background = Brushes.Transparent,
-        AllowsTransparency = true,
-        Topmost = true,
-        ShowActivated = false,
-        ShowInTaskbar = false,
-        FontFamily = new FontFamily("Segoe UI Variable, Segoe UI"),
-        UseLayoutRounding = true
-    };
+        var window = new Window
+        {
+            Title = title,
+            Width = width,
+            Height = height,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            Background = Brushes.Transparent,
+            AllowsTransparency = true,
+            Topmost = true,
+            ShowActivated = false,
+            ShowInTaskbar = false,
+            FontFamily = new FontFamily("Segoe UI Variable, Segoe UI"),
+            UseLayoutRounding = true
+        };
+        window.SourceInitialized += (_, _) => Native.ExcludeFromTaskSwitching(new WindowInteropHelper(window).Handle);
+        return window;
+    }
 
     internal static Border Surface(Brush background, double radius, UIElement? content = null) => new()
     {

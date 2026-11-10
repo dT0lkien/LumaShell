@@ -67,6 +67,9 @@ internal static class Native
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
     private static extern int GetWindowStyle(nint window, int index);
 
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    private static extern int SetWindowStyle(nint window, int index, int value);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(nint window, StringBuilder name, int capacity);
 
@@ -110,6 +113,13 @@ internal static class Native
 
     internal static void MoveWindowPixels(nint window, System.Drawing.Rectangle bounds) =>
         SetWindowPos(window, 0, bounds.Left, bounds.Top, bounds.Width, bounds.Height, 0x14);
+
+    internal static void ExcludeFromTaskSwitching(nint window)
+    {
+        const int extendedStyle = -20, toolWindow = 0x80, appWindow = 0x40000;
+        SetWindowStyle(window, extendedStyle, (GetWindowStyle(window, extendedStyle) | toolWindow) & ~appWindow);
+        SetWindowPos(window, 0, 0, 0, 0, 0, 0x37); // FRAMECHANGED, keep size, position, Z order and activation.
+    }
 
     internal static bool FocusWindow(nint window)
     {

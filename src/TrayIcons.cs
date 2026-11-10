@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using static LumaShell.Visuals;
 
@@ -16,16 +17,40 @@ internal sealed class TrayIcons
     private readonly StackPanel view = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
     private readonly StackPanel applications = new() { Orientation = Orientation.Horizontal };
     private readonly Dictionary<(nint, uint), (Image Image, Button Button)> buttons = [];
-    private readonly Action reveal;
+    private readonly StackPanel entries = new();
+    private readonly TextBlock status = Text("", 12, Muted);
+    private readonly Popup popup;
+    private TraySnapshot.Item[] snapshot = [];
     private bool refreshing;
 
     internal FrameworkElement View => view;
 
-    internal TrayIcons(Action reveal)
+    internal TrayIcons()
     {
-        this.reveal = reveal;
         view.Children.Add(applications);
-        view.Children.Add(Button(Icon("M3,12 L10,5 L17,12", 14), "Открыть трей Windows", reveal, Brushes.Transparent, 6));
+        var toggle = Button(Icon("M3,12 L10,5 L17,12", 14), "Трей приложений Luma", Show, Brushes.Transparent, 6);
+        view.Children.Add(toggle);
+        var body = new StackPanel { Width = 270 };
+        body.Children.Add(Text("Трей приложений", 16, bold: true));
+        status.Margin = new Thickness(0, 4, 0, 7);
+        status.TextWrapping = TextWrapping.Wrap;
+        body.Children.Add(status);
+        body.Children.Add(new ScrollViewer { Content = entries, MaxHeight = 290, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        var panel = Surface(Gradient("#F32B2D39", "#FB16171F"), 18, body);
+        panel.Padding = new Thickness(12);
+        panel.BorderBrush = Line;
+        panel.BorderThickness = new Thickness(1);
+        popup = new Popup { PlacementTarget = toggle, Placement = PlacementMode.Bottom, HorizontalOffset = -180,
+            VerticalOffset = 6, AllowsTransparency = true, StaysOpen = false, Child = panel };
+        toggle.Unloaded += (_, _) => popup.IsOpen = false;
+    }
+
+    internal void Show()
+    {
+        if (!view.IsVisible) return;
+        popup.IsOpen = true;
+        RenderPopup();
+        Refresh();
     }
 
     internal async void Refresh()
@@ -34,8 +59,8 @@ internal sealed class TrayIcons
         refreshing = true;
         try
         {
-            var items = await Task.Run(TraySnapshot.Read);
-            var visible = items.OrderByDescending(item => item.Pinned).Take(6).ToArray();
+            snapshot = await Task.Run(TraySnapshot.Read);
+            var visible = snapshot.OrderByDescending(item => item.Pinned).Take(6).ToArray();
             if (!buttons.Keys.SequenceEqual(visible.Select(item => (item.Window, item.Id))))
             {
                 applications.Children.Clear();
@@ -43,8 +68,8 @@ internal sealed class TrayIcons
                 foreach (var item in visible)
                 {
                     var image = new Image { Source = item.Icon, Width = 17, Height = 17 };
-                    var button = Button(image, item.Title, () => Open(item.Window), Brushes.Transparent, 4);
-                    button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; reveal(); };
+                    var button = Button(image, item.Title, () => { if (!Open(item.Window)) Show(); }, Brushes.Transparent, 4);
+                    button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; Show(); };
                     buttons.Add((item.Window, item.Id), (image, button));
                     applications.Children.Add(button);
                 }
@@ -59,19 +84,42 @@ internal sealed class TrayIcons
                     System.Windows.Automation.AutomationProperties.SetName(button.Button, item.Title);
                 }
             }
+            if (popup.IsOpen) RenderPopup();
         }
         finally { refreshing = false; }
     }
 
-    private void Open(nint owner)
+    private void RenderPopup()
+    {
+        status.Text = snapshot.Length == 0 ? "Explorer пока не вернул значки приложений" : "Щелчок переключает на открытое окно";
+        entries.Children.Clear();
+        foreach (var item in snapshot.OrderByDescending(item => item.Pinned))
+        {
+            var row = new DockPanel();
+            var icon = new Image { Source = item.Icon, Width = 17, Height = 17, Margin = new Thickness(0, 0, 8, 0) };
+            DockPanel.SetDock(icon, Dock.Left);
+            row.Children.Add(icon);
+            row.Children.Add(Text(item.Title, 12));
+            var button = Button(row, item.Title, () =>
+            {
+                if (Open(item.Window)) popup.IsOpen = false;
+                else status.Text = "У приложения нет открытого окна";
+            }, Card);
+            button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+            button.Margin = new Thickness(0, 0, 0, 4);
+            entries.Children.Add(button);
+        }
+    }
+
+    private static bool Open(nint owner)
     {
         string? app = Native.WindowApp(owner);
         if (app is not null)
         {
             var window = Native.OpenWindows().FirstOrDefault(item => item.Path.Equals(app, StringComparison.OrdinalIgnoreCase));
-            if (window is not null && Native.FocusWindow(window.Handle)) return;
+            if (window is not null && Native.FocusWindow(window.Handle)) return true;
         }
-        reveal();
+        return false;
     }
 }
 

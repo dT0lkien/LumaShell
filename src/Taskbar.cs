@@ -17,6 +17,7 @@ internal sealed class Taskbar : IDisposable
     private EventWaitHandle? ready;
     private DateTime readyDeadline;
     private DateTime revealUntil;
+    private DateTime nextStateCheck;
     private nint currentBar;
     private bool faulted;
     internal bool Active { get; private set; }
@@ -57,13 +58,16 @@ internal sealed class Taskbar : IDisposable
             ready = null;
             Active = true;
         }
-        if (!Active || DateTime.UtcNow < revealUntil) return;
+        var now = DateTime.UtcNow;
+        if (!Active || now < revealUntil) return;
         nint primary = FindWindow("Shell_TrayWnd", null);
         if (primary == 0) return;
-        if (currentBar != primary || (GetState() & 1) == 0)
+        if (currentBar != primary || now >= nextStateCheck)
         {
             currentBar = primary;
-            SetState(primary, GetState() | 1);
+            nextStateCheck = now.AddSeconds(2);
+            uint state = GetState();
+            if ((state & 1) == 0) SetState(primary, state | 1);
         }
         foreach (var window in Bars(primary))
         {
@@ -76,7 +80,11 @@ internal sealed class Taskbar : IDisposable
         revealUntil = DateTime.UtcNow.AddSeconds(15);
         var primary = FindWindow("Shell_TrayWnd", null);
         if (primary == 0) return;
-        if (Active) SetState(primary, GetState() & ~1u);
+        if (Active)
+        {
+            SetState(primary, GetState() & ~1u);
+            nextStateCheck = DateTime.MinValue;
+        }
         foreach (var window in Bars(primary)) Native.RestoreWindow(window);
         await Task.Delay(170);
         for (int attempt = 0; attempt < 10 && Native.ShortcutModifiersDown(); attempt++) await Task.Delay(70);

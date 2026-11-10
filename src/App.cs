@@ -135,7 +135,7 @@ internal sealed class App : Application
         bool onDesktop = Native.IsDesktop(underlying);
         fullscreen = !onDesktop && Native.CoversPrimaryMonitor(underlying);
         bool showChrome = preferences.Chrome && !fullscreen;
-        shortcuts.LauncherAvailable = showChrome && !screenshots.Busy;
+        shortcuts.LauncherAvailable = preferences.Chrome && !screenshots.Busy;
         if (!shortcuts.LauncherAvailable) launcher.Close();
         if (showChrome && !desktop.MenuBar.IsVisible)
         {

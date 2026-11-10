@@ -30,6 +30,7 @@ internal sealed class Launcher
 
     internal Launcher()
     {
+        window.ShowActivated = true;
         results.ItemContainerStyle = ItemStyle();
         var layout = new DockPanel();
         var heading = new DockPanel { Margin = new Thickness(4, 1, 4, 8) };
