@@ -1,0 +1,57 @@
+name: Publish Windows release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build portable applications
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $project = 'src/LumaShell.csproj'
+          [xml]$metadata = Get-Content -Raw $project
+          $version = $metadata.Project.PropertyGroup.Version
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or "v$version" -cne $env:GITHUB_REF_NAME) {
+            throw 'The release tag must match the version in LumaShell.csproj.'
+          }
+          New-Item -ItemType Directory -Path release | Out-Null
+          foreach ($rid in 'win-x64', 'win-arm64') {
+            dotnet publish $project -c Release -r $rid --self-contained true `
+              -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+              -p:EnableCompressionInSingleFile=true -p:DebugType=None -warnaserror -o "artifacts/$rid"
+            if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $rid" }
+            Copy-Item "artifacts/$rid/LumaShell.exe" "release/LumaShell-$rid.exe"
+          }
+          Copy-Item assets/Luma-Wallpaper.png, README.md release
+          Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe', '.png' } | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content release/SHA256SUMS.txt -Encoding ascii
+      - name: Publish on GitHub
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $files = @(Get-ChildItem release -File | Select-Object -ExpandProperty FullName)
+          gh release create $env:GITHUB_REF_NAME @files --verify-tag --generate-notes --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed.' }

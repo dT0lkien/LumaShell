@@ -1,0 +1,220 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace LumaShell;
+
+internal static class Native
+{
+    internal const int HotkeyMessage = 0x0312;
+    internal const int ClipboardMessage = 0x031D;
+    internal const int IslandHotkey = 1;
+    internal const int ScreenshotHotkey = 2;
+    internal const int TrayHotkey = 3;
+
+    [DllImport("user32.dll")]
+    internal static extern bool AddClipboardFormatListener(nint window);
+
+    [DllImport("user32.dll")]
+    internal static extern bool RemoveClipboardFormatListener(nint window);
+
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(nint window, int id, uint modifiers, uint key);
+
+    [DllImport("user32.dll")]
+    internal static extern bool UnregisterHotKey(nint window, int id);
+
+    [DllImport("user32.dll")]
+    internal static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    internal static extern bool SetForegroundWindow(nint window);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(nint window, int command);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(nint window);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(nint window);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetWindow(nint window, uint command);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(nint window, StringBuilder text, int capacity);
+
+    private delegate bool EnumerateWindow(nint window, nint parameter);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumerateWindow callback, nint parameter);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(nint window, out uint process);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsZoomed(nint window);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowStyle(nint window, int index);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(nint window, StringBuilder name, int capacity);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(nint window, out Rect bounds);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(nint window, int attribute, out Rect bounds, int length);
+
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+    private static extern int GetDwmFlag(nint window, int attribute, out int value, int length);
+
+    [DllImport("kernel32.dll")]
+    private static extern nint OpenProcess(uint access, bool inherit, uint process);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageName(nint process, uint flags, StringBuilder path, ref int capacity);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(nint handle);
+
+    [DllImport("user32.dll")]
+    private static extern nint MonitorFromPoint(Point point, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool GetSystemPowerStatus(out PowerStatus status);
+
+    internal static bool RegisterIslandHotkey(nint window) => RegisterHotKey(window, IslandHotkey, 0x4003, 0x20);
+    internal static bool RegisterScreenshotHotkey(nint window) => RegisterHotKey(window, ScreenshotHotkey, 0x4003, 0x53);
+    internal static bool RegisterTrayHotkey(nint window) => RegisterHotKey(window, TrayHotkey, 0x4003, 0x42);
+
+    internal static System.Drawing.Rectangle? PrimaryWorkArea()
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromPoint(default, 1), ref info)) return null;
+        return System.Drawing.Rectangle.FromLTRB(info.Work.Left, info.Work.Top, info.Work.Right, info.Work.Bottom);
+    }
+
+    internal static void MoveWindowPixels(nint window, System.Drawing.Rectangle bounds) =>
+        SetWindowPos(window, 0, bounds.Left, bounds.Top, bounds.Width, bounds.Height, 0x14);
+
+    internal static bool FocusWindow(nint window)
+    {
+        if (IsIconic(window)) ShowWindowAsync(window, 9);
+        return SetForegroundWindow(window);
+    }
+
+    internal static string? Executable(nint window)
+    {
+        if (GetWindowThreadProcessId(window, out uint id) == 0) return null;
+        return ProcessImage(id);
+    }
+
+    internal static string? ProcessImage(uint id)
+    {
+        nint process = OpenProcess(0x1000, false, id);
+        if (process == 0) return null;
+        try
+        {
+            var path = new StringBuilder(1024);
+            int size = path.Capacity;
+            return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString() : null;
+        }
+        finally { CloseHandle(process); }
+    }
+
+    internal static bool RestoreWindow(nint window) => ShowWindowAsync(window, 4);
+
+    internal static void Shortcut(byte modifier, byte key)
+    {
+        keybd_event(modifier, 0, 1, 0);
+        keybd_event(key, 0, 0, 0);
+        keybd_event(key, 0, 2, 0);
+        keybd_event(modifier, 0, 3, 0);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte key, byte scan, uint flags, nuint extraInfo);
+
+    internal static bool ShortcutModifiersDown() => GetAsyncKeyState(0x11) < 0 || GetAsyncKeyState(0x12) < 0;
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int key);
+
+    internal static List<OpenWindow> OpenWindows()
+    {
+        var windows = new List<OpenWindow>();
+        EnumWindows((window, _) =>
+        {
+            if (!IsWindowVisible(window) || IsDesktop(window) || BelongsToCurrentProcess(window)) return true;
+            int style = GetWindowStyle(window, -20);
+            if ((style & 0x40000) == 0 && ((style & 0x80) != 0 || GetWindow(window, 4) != 0)) return true;
+            if (GetDwmFlag(window, 14, out int cloaked, 4) == 0 && cloaked != 0) return true;
+            var title = new StringBuilder(256);
+            if (GetWindowText(window, title, title.Capacity) == 0) return true;
+            var path = Executable(window);
+            if (path is not null) windows.Add(new(window, path, title.ToString()));
+            return windows.Count < 60;
+        }, 0);
+        return windows;
+    }
+
+    internal sealed record OpenWindow(nint Handle, string Path, string Title);
+
+    internal static bool BelongsToCurrentProcess(nint window) => window != 0 &&
+        GetWindowThreadProcessId(window, out uint process) != 0 && process == Environment.ProcessId;
+
+    internal static bool IsDesktop(nint window)
+    {
+        if (window == 0) return true;
+        var name = new StringBuilder(96);
+        GetClassName(window, name, name.Capacity);
+        return name.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd";
+    }
+
+    internal static bool CoversPrimaryMonitor(nint window)
+    {
+        if (window == 0) return false;
+        const int caption = 0x00C00000;
+        if (IsZoomed(window) && (GetWindowStyle(window, -16) & caption) == caption) return false;
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromPoint(default, 1), ref info)) return false;
+        if (DwmGetWindowAttribute(window, 9, out var bounds, Marshal.SizeOf<Rect>()) != 0 &&
+            !GetWindowRect(window, out bounds)) return false;
+
+        return bounds.Left <= info.Monitor.Left && bounds.Top <= info.Monitor.Top &&
+               bounds.Right >= info.Monitor.Right && bounds.Bottom >= info.Monitor.Bottom;
+    }
+
+    internal static string? BatteryText()
+    {
+        if (!GetSystemPowerStatus(out var power) || (power.BatteryFlag & 128) != 0 || power.Percent > 100)
+            return null;
+        return power.ACLineStatus == 1 ? $"ϟ {power.Percent}%" : $"{power.Percent}%";
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PowerStatus
+    {
+        public byte ACLineStatus, BatteryFlag, Percent, SystemStatus;
+        public uint BatteryLifeTime, BatteryFullLifeTime;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo { public int Size; public Rect Monitor, Work; public uint Flags; }
+}
