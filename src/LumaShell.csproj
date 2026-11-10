@@ -7,7 +7,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <AssemblyName>LumaShell</AssemblyName>
-    <Version>0.3.8</Version>
+    <Version>0.3.9</Version>
     <Product>Luma Shell</Product>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../assets/Luma.ico</ApplicationIcon>

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace LumaShell;
 
@@ -14,12 +15,13 @@ internal sealed class ExplorerAppearance
     private const int BorderColor = 34;
     private const int CaptionColor = 35;
     private const int CaptionTextColor = 36;
-    private static readonly int[] Attributes = [CornerPreference, BorderColor, CaptionColor, CaptionTextColor];
+    private const string AppThemeKey = @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
     private static readonly string ExplorerPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
     private readonly Dictionary<nint, Frame> frames = [];
 
     internal void Refresh(IReadOnlyList<Native.OpenWindow> windows, nint foreground)
     {
+        bool dark = UsesDarkAppMode();
         foreach (var (handle, frame) in frames.ToArray())
             if (Native.WindowProcessId(handle) != frame.Owner) frames.Remove(handle);
 
@@ -35,9 +37,26 @@ internal sealed class ExplorerAppearance
                 frame = new Frame(owner);
                 frames.Add(window.Handle, frame);
             }
-            if (frame.Active == active) continue;
-            frame.Active = active;
-            foreach (int attribute in Attributes) Apply(window.Handle, frame, attribute, ValueFor(attribute, active));
+            var appearance = (Active: active, Dark: dark);
+            if (frame.Appearance == appearance) continue;
+            frame.Appearance = appearance;
+            Apply(window.Handle, frame, CornerPreference, 2); // DWMWCP_ROUND
+            // COLORREF stores red in the low byte.
+            uint border = dark
+                ? (active ? 0x005D715Eu : 0x00384238u)
+                : (active ? 0x00A2B2A2u : 0x00CED6CEu);
+            Apply(window.Handle, frame, BorderColor, border);
+            if (dark)
+            {
+                Apply(window.Handle, frame, CaptionColor, active ? 0x00202720u : 0x001E231Eu);
+                Apply(window.Handle, frame, CaptionTextColor, active ? 0x00EDF2EEu : 0x00C1CCC3u);
+            }
+            else
+            {
+                // Let Explorer and DWM draw the light caption and its tab background together.
+                RestoreAttribute(window.Handle, frame, CaptionColor);
+                RestoreAttribute(window.Handle, frame, CaptionTextColor);
+            }
         }
     }
 
@@ -46,16 +65,19 @@ internal sealed class ExplorerAppearance
         foreach (var (handle, frame) in frames)
         {
             if (Native.WindowProcessId(handle) != frame.Owner || !Native.IsFileExplorerWindow(handle)) continue;
-            foreach (var (attribute, change) in frame.Changes)
-            {
-                // Respect a value changed by Explorer or Windows since Luma applied its palette.
-                if (DwmGetWindowAttribute(handle, attribute, out uint current, sizeof(uint)) >= 0 &&
-                    current != change.Applied) continue;
-                uint previous = change.Previous;
-                DwmSetWindowAttribute(handle, attribute, ref previous, sizeof(uint));
-            }
+            foreach (int attribute in frame.Changes.Keys.ToArray()) RestoreAttribute(handle, frame, attribute);
         }
         frames.Clear();
+    }
+
+    private static void RestoreAttribute(nint handle, Frame frame, int attribute)
+    {
+        if (!frame.Changes.Remove(attribute, out var change)) return;
+        // Respect a value changed by Explorer or Windows since Luma applied its palette.
+        if (DwmGetWindowAttribute(handle, attribute, out uint current, sizeof(uint)) >= 0 &&
+            current != change.Applied) return;
+        uint previous = change.Previous;
+        DwmSetWindowAttribute(handle, attribute, ref previous, sizeof(uint));
     }
 
     private static void Apply(nint handle, Frame frame, int attribute, uint value)
@@ -68,20 +90,17 @@ internal sealed class ExplorerAppearance
             frame.Changes[attribute] = (previous, value);
     }
 
-    // COLORREF stores red in the low byte.
-    private static uint ValueFor(int attribute, bool active) => attribute switch
+    private static bool UsesDarkAppMode()
     {
-        CornerPreference => 2, // DWMWCP_ROUND
-        BorderColor => active ? 0x005D715Eu : 0x00384238u,
-        CaptionColor => active ? 0x00202720u : 0x001E231Eu,
-        CaptionTextColor => active ? 0x00EDF2EEu : 0x00C1CCC3u,
-        _ => ColorDefault
-    };
+        try { return Registry.GetValue(AppThemeKey, "AppsUseLightTheme", 1) is 0; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        { return false; }
+    }
 
     private sealed class Frame(uint owner)
     {
         internal uint Owner { get; } = owner;
-        internal bool? Active { get; set; }
+        internal (bool Active, bool Dark)? Appearance { get; set; }
         internal Dictionary<int, (uint Previous, uint Applied)> Changes { get; } = [];
     }
 
