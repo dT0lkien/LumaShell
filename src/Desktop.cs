@@ -57,7 +57,7 @@ internal sealed class Desktop
         this.settings = settings;
         this.openLauncher = openLauncher;
         var menu = new DockPanel { Margin = new Thickness(12, 0, 15, 0) };
-        trayIcons = new TrayIcons();
+        trayIcons = new TrayIcons(exit);
         tray = new MenuTray(() => openIsland(IslandTab.Notifications), trayIcons.Show, update, releases);
         DockPanel.SetDock(tray.View, Dock.Right);
         menu.Children.Add(tray.View);

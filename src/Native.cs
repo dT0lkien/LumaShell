@@ -133,6 +133,8 @@ internal static class Native
         return ProcessImage(id);
     }
 
+    internal static uint WindowProcessId(nint window) => window != 0 && GetWindowThreadProcessId(window, out uint pid) != 0 ? pid : 0;
+
     internal static string? ProcessImage(uint id)
     {
         nint process = OpenProcess(0x1000, false, id);

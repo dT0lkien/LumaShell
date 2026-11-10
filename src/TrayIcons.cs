@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using static LumaShell.Visuals;
 
@@ -14,43 +15,75 @@ namespace LumaShell;
 
 internal sealed class TrayIcons
 {
-    private readonly StackPanel view = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-    private readonly StackPanel applications = new() { Orientation = Orientation.Horizontal };
-    private readonly Dictionary<string, (Image Image, Button Button)> buttons = [];
+    private readonly Button toggle;
     private readonly StackPanel entries = new();
+    private readonly StackPanel actions = new();
     private readonly TextBlock status = Text("", 12, Muted);
     private readonly Popup popup;
+    private readonly Border trayPanel;
+    private readonly Border actionPanel;
+    private readonly Action exitLuma;
     private TraySnapshot.Item[] snapshot = [];
+    private TraySnapshot.Item? selected;
     private bool refreshing;
+    private bool busy;
 
-    internal FrameworkElement View => view;
+    internal FrameworkElement View => toggle;
 
-    internal TrayIcons()
+    internal TrayIcons(Action exitLuma)
     {
-        view.Children.Add(applications);
-        var toggle = Button(Icon("M3,12 L10,5 L17,12", 14), "Трей приложений Luma", Show, Brushes.Transparent, 6);
-        view.Children.Add(toggle);
-        var body = new StackPanel { Width = 270 };
+        this.exitLuma = exitLuma;
+        toggle = Button(Icon("M3,12 L10,5 L17,12", 14), "Трей приложений Luma", Show, Brushes.Transparent, 6);
+        var body = new StackPanel { Width = 258 };
         body.Children.Add(Text("Трей приложений", 16, bold: true));
         status.Margin = new Thickness(0, 4, 0, 7);
         status.TextWrapping = TextWrapping.Wrap;
         body.Children.Add(status);
         body.Children.Add(new ScrollViewer { Content = entries, MaxHeight = 290, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        var panel = Surface(Gradient("#F32B2D39", "#FB16171F"), 18, body);
-        panel.Padding = new Thickness(12);
-        panel.BorderBrush = Line;
-        panel.BorderThickness = new Thickness(1);
-        popup = new Popup { PlacementTarget = toggle, Placement = PlacementMode.Bottom, HorizontalOffset = -180,
-            VerticalOffset = 6, AllowsTransparency = true, StaysOpen = false, Child = panel };
-        popup.Opened += (_, _) => Entrance(panel);
+        trayPanel = CardSurface(body);
+        actionPanel = CardSurface(actions);
+        actionPanel.Width = 207;
+        actionPanel.VerticalAlignment = VerticalAlignment.Top;
+        actionPanel.Visibility = Visibility.Collapsed;
+        var host = new Grid();
+        host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(215) });
+        host.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        host.Children.Add(actionPanel);
+        Grid.SetColumn(trayPanel, 1);
+        host.Children.Add(trayPanel);
+        popup = new Popup { PlacementTarget = toggle, Placement = PlacementMode.Custom, AllowsTransparency = true,
+            StaysOpen = false, Child = host };
+        popup.CustomPopupPlacementCallback = (size, target, _) =>
+            [new CustomPopupPlacement(new Point(target.Width - size.Width, target.Height + 6), PopupPrimaryAxis.Horizontal)];
+        popup.Opened += (_, _) => Entrance(trayPanel);
+        popup.Closed += (_, _) => HideActions();
         toggle.Unloaded += (_, _) => popup.IsOpen = false;
+        host.PreviewKeyDown += (_, args) =>
+        {
+            if (args.Key != Key.Escape) return;
+            args.Handled = true;
+            if (selected is not null) HideActions();
+            else popup.IsOpen = false;
+        };
+    }
+
+    private static Border CardSurface(UIElement child)
+    {
+        var surface = Surface(Gradient("#F32B2D39", "#FB16171F"), 18, child);
+        surface.Padding = new Thickness(12);
+        surface.BorderBrush = Line;
+        surface.BorderThickness = new Thickness(1);
+        return surface;
     }
 
     internal void Show()
     {
-        if (!view.IsVisible) return;
-        popup.IsOpen = true;
-        RenderPopup();
+        if (!toggle.IsVisible) return;
+        if (!popup.IsOpen)
+        {
+            RenderPopup();
+            popup.IsOpen = true;
+        }
         Refresh();
     }
 
@@ -63,70 +96,131 @@ internal sealed class TrayIcons
             var previous = snapshot;
             snapshot = (await Task.Run(TraySnapshot.Read)).OrderByDescending(item => item.Pinned)
                 .ThenBy(item => item.Title, StringComparer.CurrentCultureIgnoreCase).ToArray();
-            var visible = snapshot.Take(6).ToArray();
-            if (!buttons.Keys.SequenceEqual(visible.Select(item => item.Key)))
-            {
-                applications.Children.Clear();
-                buttons.Clear();
-                foreach (var item in visible)
-                {
-                    var image = new Image { Source = item.Icon, Width = 17, Height = 17 };
-                    var button = Button(image, item.Title, () => { if (!Open(item.Path)) Show(); }, Brushes.Transparent, 4);
-                    button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; Show(); };
-                    buttons.Add(item.Key, (image, button));
-                    Entrance(button, 4, 0.91);
-                    applications.Children.Add(button);
-                }
-            }
-            else
-            {
-                foreach (var item in visible)
-                {
-                    var button = buttons[item.Key];
-                    button.Image.Source = item.Icon;
-                    button.Button.ToolTip = item.Title;
-                    System.Windows.Automation.AutomationProperties.SetName(button.Button, item.Title);
-                }
-            }
-            if (popup.IsOpen && !previous.Select(item => (item.Key, item.Title, item.Cached))
-                .SequenceEqual(snapshot.Select(item => (item.Key, item.Title, item.Cached)))) RenderPopup();
+            if (!popup.IsOpen || previous.Select(item => (item.Key, item.Title, item.Cached))
+                .SequenceEqual(snapshot.Select(item => (item.Key, item.Title, item.Cached)))) return;
+            if (selected is not null && !snapshot.Any(item => item.Key == selected.Key)) HideActions();
+            RenderPopup();
         }
         finally { refreshing = false; }
     }
 
     private void RenderPopup()
     {
-        status.Text = snapshot.Length == 0 ? "Значки запущенных приложений не найдены" :
-            snapshot.Any(item => item.Cached) ? "Включая значки из настроек Windows" : "Щелчок переключает на открытое окно";
+        status.Text = snapshot.Length == 0 ? "Значки запущенных приложений не найдены" : "Правый клик открывает действия слева";
         entries.Children.Clear();
-        foreach (var item in snapshot.OrderByDescending(item => item.Pinned))
+        foreach (var item in snapshot)
         {
             var row = new DockPanel();
             var icon = new Image { Source = item.Icon, Width = 17, Height = 17, Margin = new Thickness(0, 0, 8, 0) };
             DockPanel.SetDock(icon, Dock.Left);
             row.Children.Add(icon);
             row.Children.Add(Text(item.Title, 12));
-            var button = Button(row, item.Title, () =>
-            {
-                if (Open(item.Path)) popup.IsOpen = false;
-                else status.Text = "У приложения нет открытого окна";
-            }, Card);
+            var button = Button(row, item.Title, () => OpenWindow(item), Card);
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             button.Margin = new Thickness(0, 0, 0, 4);
+            button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; ShowActions(item, button); };
+            button.PreviewKeyDown += (_, args) =>
+            {
+                if (args.Key != Key.Apps && !(args.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift)) return;
+                args.Handled = true;
+                ShowActions(item, button);
+            };
             entries.Children.Add(button);
         }
     }
 
-    private static bool Open(string app)
+    private void OpenWindow(TraySnapshot.Item item)
     {
-        var window = Native.OpenWindows().FirstOrDefault(item => item.Path.Equals(app, StringComparison.OrdinalIgnoreCase));
-        return window is not null && Native.FocusWindow(window.Handle);
+        var window = Native.OpenWindows().FirstOrDefault(candidate => candidate.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase));
+        if (window is not null && Native.FocusWindow(window.Handle)) popup.IsOpen = false;
+        else status.Text = "У приложения нет открытого окна";
+    }
+
+    private void ShowActions(TraySnapshot.Item item, FrameworkElement row)
+    {
+        if (busy) return;
+        selected = item;
+        double offset = row.TranslatePoint(new Point(), trayPanel).Y;
+        actionPanel.Margin = new Thickness(0, Math.Clamp(offset, 0, Math.Max(0, trayPanel.ActualHeight - 145)), 8, 0);
+        actionPanel.Visibility = Visibility.Visible;
+        RenderActions(item);
+        Entrance(actionPanel, 0, 0.96);
+    }
+
+    private void HideActions()
+    {
+        selected = null;
+        actionPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void RenderActions(TraySnapshot.Item item)
+    {
+        actions.Children.Clear();
+        var title = Text(item.Title, 13, bold: true);
+        title.Margin = new Thickness(3, 0, 3, 6);
+        actions.Children.Add(title);
+        AddAction("Открыть окно", () => OpenWindow(item));
+        AddAction("Родное меню значка", () => OpenNativeMenu(item));
+        if (TrayAppActions.IsLuma(item.Path)) AddAction("Выйти из Luma", exitLuma);
+        else if (TrayAppActions.CanEnd(item.Path)) AddAction("Завершить приложение…", () => ConfirmEnd(item));
+    }
+
+    private void ConfirmEnd(TraySnapshot.Item item)
+    {
+        actions.Children.Clear();
+        var note = Text("Принудительное завершение. Несохранённые данные могут потеряться.", 12, Muted);
+        note.TextWrapping = TextWrapping.Wrap;
+        note.Margin = new Thickness(3, 0, 3, 6);
+        actions.Children.Add(note);
+        AddAction("Завершить", () => EndApplication(item));
+        AddAction("Отмена", () => RenderActions(item));
+    }
+
+    private void AddAction(string label, Action action)
+    {
+        var button = Button(label, action, Card);
+        button.HorizontalContentAlignment = HorizontalAlignment.Left;
+        button.Margin = new Thickness(0, 0, 0, 4);
+        actions.Children.Add(button);
+    }
+
+    private async void OpenNativeMenu(TraySnapshot.Item item)
+    {
+        if (busy) return;
+        var anchor = trayPanel.PointToScreen(new Point(0, 0));
+        busy = true;
+        try
+        {
+            using var placement = NativeTrayMenu.PlaceClassicMenu(item, anchor);
+            bool opened = await Task.Run(() => NativeTrayMenu.TryShow(item, anchor));
+            if (!opened && popup.IsOpen) status.Text = "Windows не открыла меню значка. Системный трей доступен по Ctrl+Alt+B.";
+            if (opened)
+            {
+                HideActions();
+                await Task.Delay(450);
+            }
+        }
+        finally { busy = false; }
+    }
+
+    private async void EndApplication(TraySnapshot.Item item)
+    {
+        if (busy) return;
+        busy = true;
+        try
+        {
+            bool ended = await Task.Run(() => TrayAppActions.TryEnd(item));
+            HideActions();
+            status.Text = ended ? "Приложение завершено" : "Не удалось однозначно найти процесс или Windows отказала в завершении";
+            Refresh();
+        }
+        finally { busy = false; }
     }
 }
 
 internal static class TraySnapshot
 {
-    internal sealed record Item(string Key, string Path, string Title, bool Pinned, ImageSource Icon, bool Cached = false);
+    internal sealed record Item(string Key, string Path, string Title, bool Pinned, ImageSource Icon, bool Cached = false, nint Owner = 0, uint Uid = 0, Guid IconGuid = default);
 
     internal static Item[] Read()
     {
@@ -202,7 +296,7 @@ public sealed class TraySnapshotCallback : ITraySnapshotCallback
                 if (programIcon is not null) image = Launcher.IconImage(programIcon.Handle);
             }
             if (image is not null)
-                lock (items) items[(icon.Window, icon.Id)] = new($"live:{icon.Window}:{icon.Id}", path, title, icon.Preference == 2, image);
+                lock (items) items[(icon.Window, icon.Id)] = new($"live:{icon.Window}:{icon.Id}", path, title, icon.Preference == 2, image, Owner: icon.Window, Uid: icon.Id, IconGuid: icon.Guid);
         }
         catch (Exception error) when (error is COMException or ArgumentException or InvalidOperationException or IOException or System.ComponentModel.Win32Exception) { }
         return 0;

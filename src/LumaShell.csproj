@@ -7,13 +7,15 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <AssemblyName>LumaShell</AssemblyName>
-    <Version>0.3.3</Version>
+    <Version>0.3.4</Version>
     <Product>Luma Shell</Product>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../assets/Luma.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
     <EmbeddedResource Include="../assets/flags.zip" LogicalName="LumaShell.Flags.zip" />
     <EmbeddedResource Include="../assets/flags-LICENSE.txt" LogicalName="LumaShell.Flags.LICENSE.txt" />
+    <EmbeddedResource Include="../assets/uia-LICENSE.txt" LogicalName="LumaShell.UIAutomation.LICENSE.txt" />
   </ItemGroup>
 </Project>
