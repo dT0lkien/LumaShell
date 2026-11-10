@@ -106,7 +106,7 @@ internal sealed class TrayIcons
 
     private void RenderPopup()
     {
-        status.Text = snapshot.Length == 0 ? "Значки запущенных приложений не найдены" : "Правый клик открывает действия слева";
+        status.Text = snapshot.Length == 0 ? "Значки запущенных приложений не найдены" : "Левый клик — действие значка, правый — меню приложения";
         entries.Children.Clear();
         foreach (var item in snapshot)
         {
@@ -115,15 +115,15 @@ internal sealed class TrayIcons
             DockPanel.SetDock(icon, Dock.Left);
             row.Children.Add(icon);
             row.Children.Add(Text(item.Title, 12));
-            var button = Button(row, item.Title, () => OpenWindow(item), Card);
+            var button = Button(row, item.Title, () => ActivateIcon(item, false, button: null), Card);
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             button.Margin = new Thickness(0, 0, 0, 4);
-            button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; ShowActions(item, button); };
+            button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; ActivateIcon(item, true, button); };
             button.PreviewKeyDown += (_, args) =>
             {
                 if (args.Key != Key.Apps && !(args.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift)) return;
                 args.Handled = true;
-                ShowActions(item, button);
+                ActivateIcon(item, true, button);
             };
             entries.Children.Add(button);
         }
@@ -133,12 +133,12 @@ internal sealed class TrayIcons
     {
         var window = Native.OpenWindows().FirstOrDefault(candidate => candidate.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase));
         if (window is not null && Native.FocusWindow(window.Handle)) popup.IsOpen = false;
-        else status.Text = "У приложения нет открытого окна";
+        else status.Text = "Windows не предоставила действие значка. Открытого окна тоже нет.";
     }
 
-    private void ShowActions(TraySnapshot.Item item, FrameworkElement row)
+    private void ShowActions(TraySnapshot.Item item, FrameworkElement row, bool allowBusy = false)
     {
-        if (busy) return;
+        if (busy && !allowBusy) return;
         selected = item;
         double offset = row.TranslatePoint(new Point(), trayPanel).Y;
         actionPanel.Margin = new Thickness(0, Math.Clamp(offset, 0, Math.Max(0, trayPanel.ActualHeight - 145)), 8, 0);
@@ -160,7 +160,7 @@ internal sealed class TrayIcons
         title.Margin = new Thickness(3, 0, 3, 6);
         actions.Children.Add(title);
         AddAction("Открыть окно", () => OpenWindow(item));
-        AddAction("Родное меню значка", () => OpenNativeMenu(item));
+        AddAction("Родное меню значка", () => ActivateIcon(item, true, null));
         if (TrayAppActions.IsLuma(item.Path)) AddAction("Выйти из Luma", exitLuma);
         else if (TrayAppActions.CanEnd(item.Path)) AddAction("Завершить приложение…", () => ConfirmEnd(item));
     }
@@ -184,7 +184,7 @@ internal sealed class TrayIcons
         actions.Children.Add(button);
     }
 
-    private async void OpenNativeMenu(TraySnapshot.Item item)
+    private async void ActivateIcon(TraySnapshot.Item item, bool contextMenu, FrameworkElement? button)
     {
         if (busy) return;
         var anchor = trayPanel.PointToScreen(new Point(0, 0));
@@ -192,11 +192,20 @@ internal sealed class TrayIcons
         try
         {
             using var placement = NativeTrayMenu.PlaceClassicMenu(item, anchor);
-            bool opened = await Task.Run(() => NativeTrayMenu.TryShow(item, anchor));
-            if (!opened && popup.IsOpen) status.Text = "Windows не открыла меню значка. Системный трей доступен по Ctrl+Alt+B.";
+            bool opened = await Task.Run(() => NativeTrayMenu.TryActivate(item, contextMenu));
+            if (!opened && popup.IsOpen)
+            {
+                if (!contextMenu) OpenWindow(item);
+                else
+                {
+                    status.Text = "Windows не предоставила меню значка. Доступны действия Luma слева.";
+                    ShowActions(item, button ?? trayPanel, allowBusy: true);
+                }
+            }
             if (opened)
             {
                 HideActions();
+                if (!contextMenu) popup.IsOpen = false;
                 await Task.Delay(450);
             }
         }
@@ -220,7 +229,7 @@ internal sealed class TrayIcons
 
 internal static class TraySnapshot
 {
-    internal sealed record Item(string Key, string Path, string Title, bool Pinned, ImageSource Icon, bool Cached = false, nint Owner = 0, uint Uid = 0, Guid IconGuid = default);
+    internal sealed record Item(string Key, string Path, string Title, bool Pinned, ImageSource Icon, bool Cached = false, nint Owner = 0, uint Uid = 0, Guid IconGuid = default, bool HasUid = false);
 
     internal static Item[] Read()
     {

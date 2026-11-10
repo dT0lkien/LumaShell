@@ -8,11 +8,9 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Interop;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Imaging;
 using static LumaShell.Visuals;
 
 namespace LumaShell;
@@ -20,6 +18,8 @@ namespace LumaShell;
 internal sealed class Desktop
 {
     internal const int BarHeight = 30;
+    private const double IconSize = 56;
+    private const double SlotSize = IconSize + 8;
     private static readonly Brush Glass = Paint("#E9222329");
     private readonly TextBlock activeApp = Text("Проводник", 13, bold: true);
     private readonly TextBlock feedback = Text("", 12, Blue);
@@ -48,7 +48,7 @@ internal sealed class Desktop
     private nint foreground;
 
     internal Window MenuBar { get; } = Overlay("Luma • Строка меню", 800, BarHeight);
-    internal Window Launcher { get; } = Overlay("Luma • Dock", 1040, 119);
+    internal Window Launcher { get; } = Overlay("Luma • Dock", 1120, 145);
     internal bool Interacting => dock.IsMouseOver || Launcher.IsActive;
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
@@ -104,15 +104,15 @@ internal sealed class Desktop
             new("Терминал", "cmd.exe", "", ["WindowsTerminal.exe", "cmd.exe", "OpenConsole.exe"], "#FF454653", "#FF101118", "M2,4 L18,4 L18,16 L2,16 Z M5,7 L8,10 L5,13 M10,13 L14,13"),
             new("Параметры", "ms-settings:", "", ["SystemSettings.exe"], "#FF9CA5B4", "#FF4D5361", "M10,3 L10,17 M3,10 L17,10 M5,5 L15,15 M15,5 L5,15 M14,10 A4,4 0 1 1 6,10 A4,4 0 1 1 14,10")
         ];
-        var glass = Surface(Gradient("#85BAC7DE", "#CB29303D"), 23);
-        glass.BorderBrush = Paint("#95FFFFFF");
+        var glass = Surface(Gradient("#787E8792", "#AD303841"), 22);
+        glass.BorderBrush = Paint("#65FFFFFF");
         glass.BorderThickness = new Thickness(1);
         glass.RenderTransformOrigin = new Point(0.5, 0.5);
         glass.RenderTransform = glassWidth;
         glass.IsHitTestVisible = false;
         var frame = new Grid();
         frame.Children.Add(glass);
-        frame.Children.Add(new Border { Padding = new Thickness(11, 8, 11, 5), Child = dockRow });
+        frame.Children.Add(new Border { Padding = new Thickness(9, 7, 9, 4), Child = dockRow });
         dock = Surface(Brushes.Transparent, 23, frame);
         dock.HorizontalAlignment = HorizontalAlignment.Center;
         dock.VerticalAlignment = VerticalAlignment.Bottom;
@@ -252,56 +252,85 @@ internal sealed class Desktop
                 dockRow.Children.Add(Tile(Installed(path), custom: true));
         }
         AddSeparator();
+        dockRow.Children.Add(Tile(new("Загрузки", "explorer.exe", "shell:Downloads", [], "#FF75D8FF", "#FF288FE0", "M2,5 H9 L11,7 H18 V17 H2 Z")));
         dockRow.Children.Add(Tile(new("Корзина", "explorer.exe", "shell:RecycleBinFolder", [], "#FFE6ECF2", "#FF778397",
             "M3,6 L17,6 M7,6 L7,3 L13,3 L13,6 M5,6 L6,17 L14,17 L15,6 M9,9 L9,14 M11,9 L11,14")));
         UpdateIndicators();
         ResizeDock();
     }
 
-    private void AddSeparator() => dockRow.Children.Add(Slot(new Border { Width = 1, Height = 42,
-        Background = Paint("#60FFFFFF"), Margin = new Thickness(7, 0, 7, 0) }));
+    private void AddSeparator() => dockRow.Children.Add(Slot(new Border { Width = 1, Height = 34,
+        Background = Paint("#45FFFFFF"), Margin = new Thickness(8, 0, 8, 0) }));
 
     private Pin Installed(string path)
     {
         if (installed.TryGetValue(path, out var pin)) return pin;
         string name = Path.GetFileNameWithoutExtension(path);
-        ImageSource? image = null;
         try
         {
             string? description = FileVersionInfo.GetVersionInfo(path).FileDescription;
             if (!string.IsNullOrWhiteSpace(description)) name = description;
-            using var icon = System.Drawing.Icon.ExtractAssociatedIcon(path);
-            if (icon is not null)
-            {
-                image = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
-                image.Freeze();
-            }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or Win32Exception or ArgumentException) { }
-        pin = new(Label(name, 55), path, "", [], "#FF7482A4", "#FF33415F", "M3,4 H17 V16 H3 Z M3,8 H17", image);
+        pin = new(Label(name, 55), path, "", [], "#FF7482A4", "#FF33415F", "M3,4 H17 V16 H3 Z M3,8 H17");
         installed[path] = pin;
+        LoadIcon(path);
         return pin;
+    }
+
+    private async void LoadIcon(string path)
+    {
+        var image = await Task.Run(() => DockArt.Extract(path));
+        if (image is null || !installed.TryGetValue(path, out var pin)) return;
+        installed[path] = pin with { Image = image };
+        dockDirty = true;
     }
 
     private FrameworkElement Tile(Pin pin, bool custom = false)
     {
-        UIElement icon = pin.Image is null ? Icon(pin.Glyph, 28) : new Image { Source = pin.Image, Width = 37, Height = 37 };
-        var tile = Surface(Gradient(pin.Light, pin.Dark), 12, icon);
-        tile.Width = tile.Height = 49;
-        tile.BorderBrush = Paint("#4BFFFFFF");
-        tile.BorderThickness = new Thickness(1);
+        var artwork = pin.Image ?? DockArt.Builtin(pin.Target, pin.Arguments);
+        UIElement icon = artwork is null ? Icon(pin.Glyph, 36) : new Image
+            { Source = artwork, Width = IconSize, Height = IconSize, Stretch = Stretch.Uniform };
+        // Native artwork supplies its own silhouette; do not wrap it in a generic colored tile.
+        var tile = Surface(artwork is null ? Gradient(pin.Light, pin.Dark) : Brushes.Transparent, 13, icon);
+        tile.Width = tile.Height = IconSize;
+        RenderOptions.SetBitmapScalingMode(tile, BitmapScalingMode.HighQuality);
         var dot = Surface(White, 2);
         dot.Width = dot.Height = 4;
-        dot.Margin = new Thickness(0, 5, 0, 0);
+        dot.Margin = new Thickness(0, 4, 0, 0);
         dot.Visibility = Visibility.Hidden;
         indicators.Add((pin, dot));
         var column = new StackPanel();
         column.Children.Add(tile);
         column.Children.Add(dot);
-        var button = Button(column, pin.Label, () => Activate(pin), Brushes.Transparent, 4);
-        button.ToolTip = new ToolTip { Content = pin.Label, Placement = PlacementMode.Top, VerticalOffset = -18 };
+        var bounce = new TranslateTransform();
+        var button = Button(column, pin.Label, () =>
+        {
+            if (!Activate(pin) || !animate) return;
+            var jump = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(540), FillBehavior = FillBehavior.Stop };
+            jump.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(0)));
+            jump.KeyFrames.Add(new EasingDoubleKeyFrame(-18, KeyTime.FromPercent(0.34), new QuadraticEase { EasingMode = EasingMode.EaseOut }));
+            jump.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(0.66), new QuadraticEase { EasingMode = EasingMode.EaseIn }));
+            jump.KeyFrames.Add(new EasingDoubleKeyFrame(-5, KeyTime.FromPercent(0.83), new QuadraticEase { EasingMode = EasingMode.EaseOut }));
+            jump.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(1), new QuadraticEase { EasingMode = EasingMode.EaseIn }));
+            bounce.BeginAnimation(TranslateTransform.YProperty, jump);
+        }, Brushes.Transparent, 4);
+        button.Width = SlotSize;
+        var plainButton = new FrameworkElementFactory(typeof(ContentPresenter));
+        plainButton.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        plainButton.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+        button.Template = new ControlTemplate(typeof(Button)) { VisualTree = plainButton };
+        button.ToolTip = new ToolTip { Content = pin.Label, Placement = PlacementMode.Top, VerticalOffset = -25,
+            Background = Paint("#EC30343C"), Foreground = White, BorderBrush = Paint("#45FFFFFF"),
+            Padding = new Thickness(10, 5, 10, 5), FontSize = 12 };
+        ToolTipService.SetInitialShowDelay(button, 120);
         var scale = new ScaleTransform(1, 1);
-        tile.RenderTransform = scale;
+        var lift = new TranslateTransform();
+        var motion = new TransformGroup();
+        motion.Children.Add(scale);
+        motion.Children.Add(lift);
+        motion.Children.Add(bounce);
+        tile.RenderTransform = motion;
         tile.RenderTransformOrigin = new Point(0.5, 1);
         button.PreviewMouseRightButtonUp += (_, args) =>
         {
@@ -325,16 +354,16 @@ internal sealed class Desktop
             Context(button, entries, PlacementMode.Top).IsOpen = true;
             args.Handled = true;
         };
-        return Slot(button, scale);
+        return Slot(button, scale, lift);
     }
 
-    private Grid Slot(FrameworkElement element, ScaleTransform? scale = null)
+    private Grid Slot(FrameworkElement element, ScaleTransform? scale = null, TranslateTransform? lift = null)
     {
         var slot = new Grid();
         var offset = new TranslateTransform();
         element.RenderTransform = offset;
         slot.Children.Add(element);
-        slots.Add(new(slot, scale, offset));
+        slots.Add(new(slot, scale, offset, lift));
         return slot;
     }
 
@@ -345,13 +374,15 @@ internal sealed class Desktop
         return true;
     }
 
-    private void Activate(Pin pin)
+    private bool Activate(Pin pin)
     {
         feedback.Text = "";
         var matches = windows.Where(item => pin.Matches(item.Path)).ToArray();
         var match = matches.FirstOrDefault(item => item.Handle != foreground) ?? matches.FirstOrDefault();
-        if (match is not null && Native.FocusWindow(match.Handle)) return;
-        if (!OpenPin(pin)) feedback.Text = "Windows не удалось открыть приложение";
+        if (match is not null && Native.FocusWindow(match.Handle)) return false;
+        bool opened = OpenPin(pin);
+        if (!opened) feedback.Text = "Windows не удалось открыть приложение";
+        return opened;
     }
 
     private void UpdateIndicators()
@@ -382,14 +413,14 @@ internal sealed class Desktop
         {
             if (tile.Scale is null) continue;
             double center = tile.Anchor.TranslatePoint(new Point(tile.Anchor.ActualWidth / 2, 0), dockRow).X;
-            double distance = hoverX is { } pointer ? (pointer - center) / 57 : double.PositiveInfinity;
-            tile.Growth = 0.38 * Math.Exp(-0.5 * distance * distance);
-            total += tile.Growth * 49;
+            double distance = hoverX is { } pointer ? (pointer - center) / SlotSize : double.PositiveInfinity;
+            tile.Growth = 0.42 * Math.Exp(-0.5 * distance * distance);
+            total += tile.Growth * IconSize;
         }
         double prefix = -total / 2;
         foreach (var tile in slots)
         {
-            double extra = tile.Growth * 49;
+            double extra = tile.Growth * IconSize;
             tile.TargetX = prefix + extra / 2;
             prefix += extra;
         }
@@ -401,7 +432,7 @@ internal sealed class Desktop
         if (args is not RenderingEventArgs frame || lastFrame == frame.RenderingTime) return;
         double elapsed = lastFrame is { } previous ? (frame.RenderingTime - previous).TotalMilliseconds : 8;
         lastFrame = frame.RenderingTime;
-        double blend = 1 - Math.Exp(-Math.Clamp(elapsed, 0, 64) / 52);
+        double blend = 1 - Math.Exp(-Math.Clamp(elapsed, 0, 64) / 58);
         if (targetsDirty) CalculateTargets();
         bool changing = false;
         foreach (var tile in slots)
@@ -412,9 +443,13 @@ internal sealed class Desktop
                 changing |= Math.Abs(transform.ScaleX - scale) > 0.002;
                 transform.ScaleX = transform.ScaleY = Approach(transform.ScaleX, scale, 0.002, blend);
             }
-            changing |= Math.Abs(tile.Offset.X - x) > 0.1 || Math.Abs(tile.Offset.Y - y) > 0.1;
+            changing |= Math.Abs(tile.Offset.X - x) > 0.1;
             tile.Offset.X = Approach(tile.Offset.X, x, 0.1, blend);
-            tile.Offset.Y = Approach(tile.Offset.Y, y, 0.1, blend);
+            if (tile.Lift is { } lift)
+            {
+                changing |= Math.Abs(lift.Y - y) > 0.1;
+                lift.Y = Approach(lift.Y, y, 0.1, blend);
+            }
         }
         changing |= Math.Abs(glassWidth.ScaleX - targetGlassWidth) > 0.002;
         glassWidth.ScaleX = Approach(glassWidth.ScaleX, targetGlassWidth, 0.002, blend);
@@ -440,6 +475,7 @@ internal sealed class Desktop
         {
             if (tile.Scale is { } scale) scale.ScaleX = scale.ScaleY = 1;
             tile.Offset.X = tile.Offset.Y = 0;
+            if (tile.Lift is { } lift) lift.Y = 0;
         }
     }
 
@@ -482,7 +518,7 @@ internal sealed class Desktop
 
     internal void PlaceDock(Rect area)
     {
-        Launcher.Width = Math.Min(1040, area.Width);
+        Launcher.Width = Math.Min(1120, area.Width);
         Launcher.Left = area.Left + (area.Width - Launcher.Width) / 2;
         Launcher.Top = area.Bottom - Launcher.Height - 5;
         ResizeDock();
@@ -490,8 +526,8 @@ internal sealed class Desktop
 
     private void ResizeDock()
     {
-        double desired = indicators.Count * 57 + 62;
-        double scale = Math.Clamp((Launcher.Width - 12) / (desired + 55), 0.1, 1);
+        double desired = indicators.Count * SlotSize + (dynamicPaths.Length > 0 ? 34 : 17) + 18;
+        double scale = Math.Clamp((Launcher.Width - 12) / (desired + 82), 0.1, 1);
         dock.LayoutTransform = scale < 1 ? new ScaleTransform(scale, scale) : Transform.Identity;
     }
 
@@ -502,7 +538,7 @@ internal sealed class Desktop
             Processes.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase);
     }
 
-    private sealed record DockSlot(Grid Anchor, ScaleTransform? Scale, TranslateTransform Offset)
+    private sealed record DockSlot(Grid Anchor, ScaleTransform? Scale, TranslateTransform Offset, TranslateTransform? Lift)
     {
         internal double Growth { get; set; }
         internal double TargetX { get; set; }

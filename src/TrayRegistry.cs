@@ -35,7 +35,7 @@ internal static class TrayRegistry
                 string title = Label(icon.GetValue("InitialTooltip") as string ?? "", 85);
                 if (title.Length == 0) title = System.IO.Path.GetFileNameWithoutExtension(path);
                 Guid.TryParse(icon.GetValue("IconGuid") as string, out var guid);
-                missing[path] = new(path, id, title, pinned, guid);
+                missing[path] = new(path, id, title, pinned, guid, icon.GetValue("UID") is int uid ? unchecked((uint)uid) : null);
             }
             if (missing.Count == 0) return [];
             var names = missing.Keys.Select(Path.GetFileNameWithoutExtension).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -49,7 +49,7 @@ internal static class TrayRegistry
                         if (!names.Contains(process.ProcessName) || Native.ProcessImage((uint)process.Id) is not { } executable ||
                             !missing.Remove(executable, out var saved)) continue;
                         if (GetIcon(root, saved) is { } image)
-                            found.Add(new($"saved:{saved.Path}", saved.Path, saved.Title, saved.Pinned, image, true, IconGuid: saved.IconGuid));
+                            found.Add(new($"saved:{saved.Path}", saved.Path, saved.Title, saved.Pinned, image, true, Uid: saved.Uid ?? 0, IconGuid: saved.IconGuid, HasUid: saved.Uid.HasValue));
                     }
                     catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
                 }
@@ -115,7 +115,7 @@ internal static class TrayRegistry
         return image;
     }
 
-    private sealed record SavedIcon(string Path, string Id, string Title, bool Pinned, Guid IconGuid);
+    private sealed record SavedIcon(string Path, string Id, string Title, bool Pinned, Guid IconGuid, uint? Uid);
     [DllImport("shell32.dll")]
     private static extern int SHGetKnownFolderPath(ref Guid folder, uint flags, nint token, out nint path);
 }

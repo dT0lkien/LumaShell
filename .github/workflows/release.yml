@@ -47,6 +47,13 @@ jobs:
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
           } | Set-Content release/SHA256SUMS.txt -Encoding ascii
+      - name: Verify Dock artwork on Windows
+        shell: pwsh
+        run: |
+          dotnet run --project tools/DockPreview/DockPreview.csproj -c Release -- release/Dock-Preview.png
+          if ($LASTEXITCODE -ne 0) { throw 'Dock artwork verification failed.' }
+          $hash = (Get-FileHash release/Dock-Preview.png -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Dock-Preview.png" | Add-Content release/SHA256SUMS.txt -Encoding ascii
       - name: Publish on GitHub
         shell: pwsh
         env:
