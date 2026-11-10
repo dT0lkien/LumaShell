@@ -117,6 +117,7 @@ internal sealed class Launcher
         query.Clear();
         Render();
         window.Show();
+        if (window.Content is FrameworkElement panel) Entrance(panel, 10, 0.98);
         window.Activate();
         window.Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => query.Focus()));
         if (catalog is null && !loading) Load();

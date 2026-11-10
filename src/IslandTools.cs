@@ -30,6 +30,9 @@ internal sealed partial class Island
     private FrameworkElement BuildHome()
     {
         var layout = new DockPanel();
+        var networkCard = BuildNetworkCard();
+        DockPanel.SetDock(networkCard, Dock.Top);
+        layout.Children.Add(networkCard);
         var row = new DockPanel { Margin = new Thickness(2, 7, 2, 0) };
         var prismActions = Row(Button("Открыть", () => Prism.Open()),
             Button(prismToggleLabel, "Включить или выключить чтение статуса Prism", prism.Toggle),

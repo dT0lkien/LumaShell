@@ -66,11 +66,12 @@ internal sealed partial class Island
     internal event Action? ClipboardToggleRequested;
     internal event Action? Collapsed;
 
-    internal Island(Screenshots screenshots, Activity activity, Prism prism, Preferences preferences, Action toggleShortcut)
+    internal Island(Screenshots screenshots, Activity activity, Prism prism, PublicNetwork network, Preferences preferences, Action toggleShortcut)
     {
         this.screenshots = screenshots;
         this.activity = activity;
         this.prism = prism;
+        this.network = network;
         this.preferences = preferences;
         this.toggleShortcut = toggleShortcut;
         shell = Surface(Gradient("#FF0B0B10", "#FF10101B"), 17);
@@ -106,8 +107,14 @@ internal sealed partial class Island
         compactActivity.Margin = new Thickness(12, 0, 0, 0);
         DockPanel.SetDock(activityGlyph, Dock.Left);
         DockPanel.SetDock(compactTime, Dock.Left);
+        countryBadge.Visibility = Visibility.Collapsed;
+        countryBadge.Padding = new Thickness(3, 2, 3, 2);
+        countryBadge.Margin = new Thickness(7, 0, 0, 0);
+        countryBadge.VerticalAlignment = VerticalAlignment.Center;
+        DockPanel.SetDock(countryBadge, Dock.Right);
         compact.Children.Add(activityGlyph);
         compact.Children.Add(compactTime);
+        compact.Children.Add(countryBadge);
         compact.Children.Add(compactActivity);
         var header = Button(compact, "Раскрыть или свернуть Dynamic Island", Toggle, Brushes.Transparent, 12);
         header.HorizontalContentAlignment = HorizontalAlignment.Stretch;
@@ -147,6 +154,8 @@ internal sealed partial class Island
         activity.Updated += RenderActivity;
         activity.Arrived += app => Flash($"●  {app}");
         prism.Updated += RefreshPrism;
+        network.Changed += RenderNetwork;
+        RenderNetwork();
         RefreshPrism();
         RenderClipboard();
         RenderMedia();
@@ -245,14 +254,7 @@ internal sealed partial class Island
         if (tab == IslandTab.Screenshots) RefreshScreenshots();
         if (!expanded) return;
         MoveHeight();
-        if (animate)
-        {
-            var slide = new TranslateTransform();
-            body.RenderTransform = slide;
-            slide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(7, 0, TimeSpan.FromMilliseconds(220))
-                { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
-            body.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.4, 1, TimeSpan.FromMilliseconds(180)));
-        }
+        if (animate) Entrance(body, 7, 1);
     }
 
     private void ScheduleHover()
@@ -287,15 +289,19 @@ internal sealed partial class Island
         expanded = value;
         shell.CornerRadius = new CornerRadius(value ? 27 : 19);
         MoveHeight();
-        panel.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-        if (value && animate)
+        panel.IsHitTestVisible = value;
+        if (value)
         {
-            panel.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(155))
-            {
-                BeginTime = TimeSpan.FromMilliseconds(85),
-                FillBehavior = FillBehavior.Stop
-            });
+            panel.Visibility = Visibility.Visible;
+            if (animate) Entrance(panel, -7, 0.975);
         }
+        else if (animate)
+        {
+            var fade = new DoubleAnimation(panel.Opacity, 0, TimeSpan.FromMilliseconds(110));
+            fade.Completed += (_, _) => { if (!expanded) panel.Visibility = Visibility.Collapsed; };
+            panel.BeginAnimation(UIElement.OpacityProperty, fade);
+        }
+        else panel.Visibility = Visibility.Collapsed;
         UpdateWidth();
         if (!value) Collapsed?.Invoke();
     }
@@ -305,7 +311,7 @@ internal sealed partial class Island
         double from = shell.Height;
         double to = !expanded ? CompactHeight : selected switch
         {
-            IslandTab.Home => 290,
+            IslandTab.Home => 337,
             IslandTab.Music => 243,
             IslandTab.Focus => 235,
             IslandTab.Clipboard => 280,

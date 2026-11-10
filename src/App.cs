@@ -16,6 +16,7 @@ internal sealed class App : Application
     private Launcher launcher = null!;
     private Activity activity = null!;
     private Prism prism = null!;
+    private PublicNetwork network = null!;
     private Island island = null!;
     private Desktop desktop = null!;
     private TopBar topBar = null!;
@@ -51,13 +52,14 @@ internal sealed class App : Application
         screenshots = new Screenshots(preferences);
         activity = new Activity();
         prism = new Prism(preferences);
+        network = new PublicNetwork();
         taskbar = new Taskbar();
         Taskbar.Recover();
         updates = new Updates();
         launcher = new Launcher();
         shortcuts = new ShellShortcuts(Dispatcher, screenshots.Begin, ToggleLauncher);
         if (!shortcuts.Configure(preferences.ReplaceSnip, preferences.WinLauncher)) preferences.ReplaceSnip = preferences.WinLauncher = false;
-        island = new Island(screenshots, activity, prism, preferences, ToggleSnip);
+        island = new Island(screenshots, activity, prism, network, preferences, ToggleSnip);
         desktop = new Desktop(preferences, tab => OpenIsland(tab), screenshots.Begin, screenshots.OpenFolder, CloseFromMenu,
             taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher, ToggleWin);
         topBar = new TopBar(desktop.MenuBar);
@@ -72,6 +74,7 @@ internal sealed class App : Application
         screenshots.Saved += _ => { island.RefreshScreenshots(); island.Flash("✓  Снимок сохранён в PNG"); };
         screenshots.Failed += message => island.Flash(message);
         prism.Feedback += island.Flash;
+        prism.Updated += () => network.Refresh();
         taskbar.Failed += () => island.Flash("Не удалось скрыть панель задач Windows");
         updates.Changed += () => island.Flash(updates.Status);
         topBar.Enable(preferences.Chrome);
@@ -82,6 +85,7 @@ internal sealed class App : Application
         desktop.RefreshClock();
         island.RefreshMedia();
         prism.Refresh();
+        network.Refresh();
         if (Updates.ReadResult() is { } updateResult) island.Flash(updateResult);
         CreateTray();
         desktop.RefreshTray();
@@ -105,6 +109,7 @@ internal sealed class App : Application
         if (ticks % 20 == 0 && desktop.MenuBar.IsVisible) desktop.RefreshTray();
         if (ticks % 25 == 0 && preferences.Chrome && preferences.HideWindowsTaskbar) taskbar.SetEnabled(true);
         if (ticks % 30 == 0) prism.Refresh();
+        if (ticks % 300 == 0) network.Refresh();
         if (ticks % 50 == 0) desktop.RefreshClock();
         if (ticks % 108000 == 75) updates.Check();
     }
@@ -315,6 +320,7 @@ internal sealed class App : Application
         taskbar?.Dispose();
         updates?.Dispose();
         prism?.Dispose();
+        network?.Dispose();
         if (hotkeyRegistered) Native.UnregisterHotKey(islandHandle, Native.IslandHotkey);
         if (screenshotHotkey) Native.UnregisterHotKey(islandHandle, Native.ScreenshotHotkey);
         if (nativeTrayHotkey) Native.UnregisterHotKey(islandHandle, Native.TrayHotkey);

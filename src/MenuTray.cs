@@ -38,7 +38,6 @@ internal sealed class MenuTray
         popup.PlacementTarget = controls;
         popup.HorizontalOffset = -151;
         popup.VerticalOffset = 6;
-        popup.PopupAnimation = SystemParameters.ClientAreaAnimation ? PopupAnimation.Fade : PopupAnimation.None;
 
         var menu = new StackPanel { Width = 252 };
         var title = Text("Пункт управления", 17, bold: true);
@@ -77,6 +76,7 @@ internal sealed class MenuTray
         container.BorderBrush = Paint("#66FFFFFF");
         container.BorderThickness = new Thickness(1);
         popup.Child = container;
+        popup.Opened += (_, _) => Entrance(container);
         controls.Unloaded += (_, _) => popup.IsOpen = false;
     }
 

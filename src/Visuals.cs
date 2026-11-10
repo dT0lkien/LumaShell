@@ -6,6 +6,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 
 namespace LumaShell;
@@ -93,6 +94,25 @@ internal static class Visuals
         CornerRadius = new CornerRadius(radius),
         Child = content
     };
+
+    internal static void Entrance(FrameworkElement element, double travel = -8, double startScale = 0.97)
+    {
+        if (!SystemParameters.ClientAreaAnimation) return;
+        var time = TimeSpan.FromMilliseconds(220);
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var scale = new ScaleTransform();
+        var shift = new TranslateTransform();
+        var transform = new TransformGroup();
+        transform.Children.Add(scale);
+        transform.Children.Add(shift);
+        element.RenderTransformOrigin = new Point(0.5, 0);
+        element.RenderTransform = transform;
+        DoubleAnimation Ease(double from, double to) => new(from, to, time) { EasingFunction = easing, FillBehavior = FillBehavior.Stop };
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, Ease(startScale, 1));
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, Ease(startScale, 1));
+        shift.BeginAnimation(TranslateTransform.YProperty, Ease(travel, 0));
+        element.BeginAnimation(UIElement.OpacityProperty, Ease(0, 1));
+    }
 
     private static ControlTemplate CreateButtonTemplate()
     {

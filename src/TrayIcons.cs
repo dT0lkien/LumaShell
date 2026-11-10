@@ -16,7 +16,7 @@ internal sealed class TrayIcons
 {
     private readonly StackPanel view = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
     private readonly StackPanel applications = new() { Orientation = Orientation.Horizontal };
-    private readonly Dictionary<(nint, uint), (Image Image, Button Button)> buttons = [];
+    private readonly Dictionary<string, (Image Image, Button Button)> buttons = [];
     private readonly StackPanel entries = new();
     private readonly TextBlock status = Text("", 12, Muted);
     private readonly Popup popup;
@@ -42,6 +42,7 @@ internal sealed class TrayIcons
         panel.BorderThickness = new Thickness(1);
         popup = new Popup { PlacementTarget = toggle, Placement = PlacementMode.Bottom, HorizontalOffset = -180,
             VerticalOffset = 6, AllowsTransparency = true, StaysOpen = false, Child = panel };
+        popup.Opened += (_, _) => Entrance(panel);
         toggle.Unloaded += (_, _) => popup.IsOpen = false;
     }
 
@@ -59,18 +60,21 @@ internal sealed class TrayIcons
         refreshing = true;
         try
         {
-            snapshot = await Task.Run(TraySnapshot.Read);
-            var visible = snapshot.OrderByDescending(item => item.Pinned).Take(6).ToArray();
-            if (!buttons.Keys.SequenceEqual(visible.Select(item => (item.Window, item.Id))))
+            var previous = snapshot;
+            snapshot = (await Task.Run(TraySnapshot.Read)).OrderByDescending(item => item.Pinned)
+                .ThenBy(item => item.Title, StringComparer.CurrentCultureIgnoreCase).ToArray();
+            var visible = snapshot.Take(6).ToArray();
+            if (!buttons.Keys.SequenceEqual(visible.Select(item => item.Key)))
             {
                 applications.Children.Clear();
                 buttons.Clear();
                 foreach (var item in visible)
                 {
                     var image = new Image { Source = item.Icon, Width = 17, Height = 17 };
-                    var button = Button(image, item.Title, () => { if (!Open(item.Window)) Show(); }, Brushes.Transparent, 4);
+                    var button = Button(image, item.Title, () => { if (!Open(item.Path)) Show(); }, Brushes.Transparent, 4);
                     button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; Show(); };
-                    buttons.Add((item.Window, item.Id), (image, button));
+                    buttons.Add(item.Key, (image, button));
+                    Entrance(button, 4, 0.91);
                     applications.Children.Add(button);
                 }
             }
@@ -78,20 +82,22 @@ internal sealed class TrayIcons
             {
                 foreach (var item in visible)
                 {
-                    var button = buttons[(item.Window, item.Id)];
+                    var button = buttons[item.Key];
                     button.Image.Source = item.Icon;
                     button.Button.ToolTip = item.Title;
                     System.Windows.Automation.AutomationProperties.SetName(button.Button, item.Title);
                 }
             }
-            if (popup.IsOpen) RenderPopup();
+            if (popup.IsOpen && !previous.Select(item => (item.Key, item.Title, item.Cached))
+                .SequenceEqual(snapshot.Select(item => (item.Key, item.Title, item.Cached)))) RenderPopup();
         }
         finally { refreshing = false; }
     }
 
     private void RenderPopup()
     {
-        status.Text = snapshot.Length == 0 ? "Explorer пока не вернул значки приложений" : "Щелчок переключает на открытое окно";
+        status.Text = snapshot.Length == 0 ? "Значки запущенных приложений не найдены" :
+            snapshot.Any(item => item.Cached) ? "Включая значки из настроек Windows" : "Щелчок переключает на открытое окно";
         entries.Children.Clear();
         foreach (var item in snapshot.OrderByDescending(item => item.Pinned))
         {
@@ -102,7 +108,7 @@ internal sealed class TrayIcons
             row.Children.Add(Text(item.Title, 12));
             var button = Button(row, item.Title, () =>
             {
-                if (Open(item.Window)) popup.IsOpen = false;
+                if (Open(item.Path)) popup.IsOpen = false;
                 else status.Text = "У приложения нет открытого окна";
             }, Card);
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
@@ -111,23 +117,24 @@ internal sealed class TrayIcons
         }
     }
 
-    private static bool Open(nint owner)
+    private static bool Open(string app)
     {
-        string? app = Native.WindowApp(owner);
-        if (app is not null)
-        {
-            var window = Native.OpenWindows().FirstOrDefault(item => item.Path.Equals(app, StringComparison.OrdinalIgnoreCase));
-            if (window is not null && Native.FocusWindow(window.Handle)) return true;
-        }
-        return false;
+        var window = Native.OpenWindows().FirstOrDefault(item => item.Path.Equals(app, StringComparison.OrdinalIgnoreCase));
+        return window is not null && Native.FocusWindow(window.Handle);
     }
 }
 
 internal static class TraySnapshot
 {
-    internal sealed record Item(nint Window, uint Id, string Title, bool Pinned, ImageSource Icon);
+    internal sealed record Item(string Key, string Path, string Title, bool Pinned, ImageSource Icon, bool Cached = false);
 
     internal static Item[] Read()
+    {
+        var live = ReadExplorer();
+        return live.Concat(TrayRegistry.Read(live)).ToArray();
+    }
+
+    private static Item[] ReadExplorer()
     {
         object? shell = null;
         try
@@ -174,10 +181,11 @@ public sealed class TraySnapshotCallback : ITraySnapshotCallback
     {
         if (item == 0) return 0;
         var icon = Marshal.PtrToStructure<NotifyItem>(item);
-        if (icon.Window == 0 || icon.Preference == 1 || !IsWindow(icon.Window)) return 0;
+        if (icon.Window == 0 || !IsWindow(icon.Window)) return 0;
         try
         {
-            string path = Native.Executable(icon.Window) ?? "";
+            string executable = Native.Executable(icon.Window) ?? "";
+            string path = Native.WindowApp(icon.Window) ?? executable;
             string title = Label(Marshal.PtrToStringUni(icon.Tooltip) ?? "", 85);
             if (title.Length == 0) title = Path.GetFileNameWithoutExtension(path);
             if (title.Length == 0) return 0;
@@ -194,7 +202,7 @@ public sealed class TraySnapshotCallback : ITraySnapshotCallback
                 if (programIcon is not null) image = Launcher.IconImage(programIcon.Handle);
             }
             if (image is not null)
-                lock (items) items[(icon.Window, icon.Id)] = new(icon.Window, icon.Id, title, icon.Preference == 2, image);
+                lock (items) items[(icon.Window, icon.Id)] = new($"live:{icon.Window}:{icon.Id}", path, title, icon.Preference == 2, image);
         }
         catch (Exception error) when (error is COMException or ArgumentException or InvalidOperationException or IOException or System.ComponentModel.Win32Exception) { }
         return 0;

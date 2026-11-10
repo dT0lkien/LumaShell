@@ -7,9 +7,13 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <AssemblyName>LumaShell</AssemblyName>
-    <Version>0.3.2</Version>
+    <Version>0.3.3</Version>
     <Product>Luma Shell</Product>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../assets/Luma.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../assets/flags.zip" LogicalName="LumaShell.Flags.zip" />
+    <EmbeddedResource Include="../assets/flags-LICENSE.txt" LogicalName="LumaShell.Flags.LICENSE.txt" />
+  </ItemGroup>
 </Project>
