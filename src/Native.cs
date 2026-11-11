@@ -15,6 +15,8 @@ internal static class Native
     internal const int TrayHotkey = 3;
     internal const int LauncherHotkey = 4;
     internal const ushort LauncherActivationKey = 0x87; // F24
+    internal const int FinderHotkey = 5;
+    internal const ushort FinderActivationKey = 0x86; // F23
 
     [DllImport("user32.dll")]
     internal static extern bool AddClipboardFormatListener(nint window);
@@ -92,6 +94,8 @@ internal static class Native
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern bool QueryFullProcessImageName(nint process, uint flags, StringBuilder path, ref int capacity);
+    [DllImport("kernel32.dll")]
+    private static extern bool GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
 
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(nint handle);
@@ -109,6 +113,7 @@ internal static class Native
     internal static bool RegisterScreenshotHotkey(nint window) => RegisterHotKey(window, ScreenshotHotkey, 0x4003, 0x53);
     internal static bool RegisterTrayHotkey(nint window) => RegisterHotKey(window, TrayHotkey, 0x4003, 0x42);
     internal static bool RegisterLauncherHotkey(nint window) => RegisterHotKey(window, LauncherHotkey, 0x4000, LauncherActivationKey);
+    internal static bool RegisterFinderHotkey(nint window) => RegisterHotKey(window, FinderHotkey, 0x4000, FinderActivationKey);
 
     internal static System.Drawing.Rectangle? PrimaryWorkArea()
     {
@@ -158,6 +163,14 @@ internal static class Native
             int size = path.Capacity;
             return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString() : null;
         }
+        finally { CloseHandle(process); }
+    }
+
+    internal static long ProcessCreationTime(uint id)
+    {
+        nint process = OpenProcess(0x1000, false, id);
+        if (process == 0) return 0;
+        try { return GetProcessTimes(process, out long creation, out _, out _, out _) ? creation : 0; }
         finally { CloseHandle(process); }
     }
 

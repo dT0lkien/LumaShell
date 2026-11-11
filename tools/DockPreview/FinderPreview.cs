@@ -58,6 +58,7 @@ internal static class FinderPreview
 
             VerifyShellMenu(assembly, desktop, sandbox);
             VerifyHiddenWindow(assembly);
+            VerifyFolderShortcut(assembly);
 
             list.SelectedIndex = 0;
             window.UpdateLayout();
@@ -76,6 +77,25 @@ internal static class FinderPreview
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
         }
+    }
+
+    private static void VerifyFolderShortcut(Assembly assembly)
+    {
+        var type = assembly.GetType("LumaShell.WinTap", throwOnError: true)!;
+        var tap = Activator.CreateInstance(type, nonPublic: true)!;
+        var handle = type.GetMethod("Handle", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        string Key(int key, bool down, bool launcher, bool finder) =>
+            handle.Invoke(tap, [key, down, launcher, false, finder])!.ToString()!;
+        const int win = 0x5B, e = 0x45, d = 0x44;
+        if (Key(win, true, true, true) != "Hold" || Key(e, true, true, true) != "OpenFolder" ||
+            Key(e, true, true, true) != "Suppress" || Key(e, false, true, true) != "Suppress" ||
+            Key(win, false, true, true) != "Suppress" ||
+            Key(win, true, true, true) != "Hold" || Key(win, false, true, true) != "Launch" ||
+            Key(win, true, false, true) != "Hold" || Key(win, false, false, true) != "ReplayTap" ||
+            Key(win, true, true, true) != "Hold" || Key(d, true, true, true) != "ReplayChord" ||
+            Key(win, false, true, true) != "Pass")
+            throw new InvalidOperationException("Win+E did not preserve single Win and other Win shortcuts.");
+        Console.WriteLine("Win+E routing preserved the launcher and other Win chords.");
     }
 
     private static void VerifyShellMenu(Assembly assembly, string folder, string sandbox)

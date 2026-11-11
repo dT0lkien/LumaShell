@@ -8,6 +8,9 @@ $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $taskName = "LumaShell-$sid"
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runCommand = '"{0}" --logon' -f $app
+$folderRoot = Join-Path $env:RUNNER_TEMP ('Luma-Folder-' + [Guid]::NewGuid().ToString('N'))
+$folder = Join-Path $folderRoot 'Папка для проверки'
+[IO.Directory]::CreateDirectory($folder) | Out-Null
 
 Add-Type @'
 using System;
@@ -23,6 +26,23 @@ public static class LumaLaunchProbe
     [DllImport("user32", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder title, int capacity);
     [DllImport("user32")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("kernel32")] public static extern uint SetErrorMode(uint mode);
+    [DllImport("shell32", CharSet = CharSet.Unicode)] public static extern IntPtr ShellExecute(
+        IntPtr owner, string verb, string file, string parameters, string directory, int show);
+
+    public static bool WindowVisible(uint process, string expected)
+    {
+        bool found = false;
+        EnumWindows((window, _) =>
+        {
+            GetWindowThreadProcessId(window, out uint pid);
+            if (pid != process || !IsWindowVisible(window)) return true;
+            var title = new StringBuilder(160);
+            GetWindowText(window, title, title.Capacity);
+            found = title.ToString() == expected;
+            return !found;
+        }, IntPtr.Zero);
+        return found;
+    }
 
     public static bool DesktopVisible(uint process)
     {
@@ -63,6 +83,16 @@ try {
         throw 'Luma started but did not register for logon.'
     }
     Write-Host 'The published executable kept the Dock and Island visible through startup.'
+
+    $result = [LumaLaunchProbe]::ShellExecute([IntPtr]::Zero, $null, $folder, $null, $null, 1)
+    if ($result.ToInt64() -le 32) { throw "Windows failed to open the sample folder ($result)." }
+    $found = $false
+    for ($i = 0; $i -lt 32 -and !$found; $i++) {
+        if ($process.WaitForExit(500)) { throw 'Luma exited while Windows opened a folder.' }
+        $found = [LumaLaunchProbe]::WindowVisible($process.Id, 'Папка для проверки • Luma Finder')
+    }
+    if (!$found) { throw 'The Windows folder request did not reach the running Luma Finder.' }
+    Write-Host 'Windows opened a Unicode folder with spaces in the running Luma Finder.'
 } catch {
     $exeName = [IO.Path]::GetFileName($app)
     Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$started; Id=1000,1026} -ErrorAction SilentlyContinue |
@@ -78,4 +108,23 @@ try {
     if ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
         Remove-ItemProperty $runKey -Name LumaShell
     }
+    foreach ($type in 'Directory', 'Drive') {
+        $shell = Get-Item "HKCU:\Software\Classes\$type\shell" -ErrorAction SilentlyContinue
+        if (!$shell) { continue }
+        $verb = $shell.OpenSubKey('LumaShell.Finder')
+        if ($verb -and $verb.GetValue('LumaShellRegistration') -eq 1) {
+            $previous = $verb.GetValue('LumaShellPreviousDefault', $null, 'DoNotExpandEnvironmentNames')
+            $previousKind = if ($null -ne $previous) { $verb.GetValueKind('LumaShellPreviousDefault') }
+            $verb.Close()
+            $writable = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\Classes\$type\shell", $true)
+            if ($writable.GetValue('') -eq 'LumaShell.Finder') {
+                if ($null -ne $previous) { $writable.SetValue('', $previous, $previousKind) }
+                else { $writable.DeleteValue('', $false) }
+            }
+            $writable.DeleteSubKeyTree('LumaShell.Finder', $false)
+            $writable.Close()
+        } elseif ($verb) { $verb.Close() }
+        $shell.Close()
+    }
+    Remove-Item -LiteralPath $folderRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

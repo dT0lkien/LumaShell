@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -140,24 +141,15 @@ internal sealed class Prism(Preferences settings) : IDisposable
 
     internal static bool IsTrayClient(string path) => Path.IsPathFullyQualified(path) &&
         Path.GetFileName(path).Equals("Prism.exe", StringComparison.OrdinalIgnoreCase) &&
-        File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "resources", "app.asar")) &&
-        CoreLocations(path).Any(File.Exists);
+        (File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "resources", "app.asar")) ||
+            CoreLocations(path).Any(File.Exists));
 
     internal static async Task<bool> OpenFromTray(string path)
     {
         if (!IsTrayClient(path)) return false;
-        nint window = Native.FindTitledWindow(path, "Chrome_WidgetWin_1", "Prism");
-        if (window != 0 && Native.IsApplicationWindowShown(window) && Native.FocusWindow(window)) return true;
-        if (window != 0 && !Native.IsApplicationWindowShown(window) && Native.ShowApplicationWindow(window))
-        {
-            for (int attempt = 0; attempt < 5; attempt++)
-            {
-                await Task.Delay(50);
-                if (!Native.IsApplicationWindowShown(window)) continue;
-                Native.FocusWindow(window);
-                return true;
-            }
-        }
+        nint window = FindWindow(path);
+        if (window != 0)
+            return await ActivateWindow(window) || await RequestElevatedActivation(Native.WindowProcessId(window));
 
         // Prism's second-instance handler shows the existing window. Only use it
         // for the exact running installation in this session.
@@ -177,6 +169,63 @@ internal sealed class Prism(Preferences settings) : IDisposable
             }
         }
         return running && Desktop.Launch(path);
+    }
+
+    private static nint FindWindow(string path)
+    {
+        foreach (string title in new[] { "Prism", "Prism VPN" })
+            foreach (string className in new[] { "Chrome_WidgetWin_1", "Chrome_WidgetWin_0" })
+                if (Native.FindTitledWindow(path, className, title) is var window && window != 0) return window;
+        return 0;
+    }
+
+    private static async Task<bool> ActivateWindow(nint window)
+    {
+        if (!Native.IsApplicationWindowShown(window) && !Native.ShowApplicationWindow(window)) return false;
+        for (int attempt = 0; attempt < 6; attempt++)
+        {
+            if (Native.IsApplicationWindowShown(window) &&
+                (Native.GetForegroundWindow() == window || Native.FocusWindow(window))) return true;
+            await Task.Delay(45);
+        }
+        return false;
+    }
+
+    private static async Task<bool> RequestElevatedActivation(uint processId)
+    {
+        if (processId == 0 || Worker.Executable is not { } luma) return false;
+        try
+        {
+            if (Native.ProcessImage(processId) is not { } path || !IsTrayClient(path)) return false;
+            long started = Native.ProcessCreationTime(processId);
+            if (started == 0) return false;
+            var start = new ProcessStartInfo(luma) { UseShellExecute = true, Verb = "runas" };
+            start.ArgumentList.Add("--show-prism");
+            start.ArgumentList.Add(processId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            start.ArgumentList.Add(started.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            using var helper = Process.Start(start);
+            if (helper is null) return false;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            await helper.WaitForExitAsync(timeout.Token);
+            return helper.ExitCode == 0;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or OperationCanceledException)
+        { return false; }
+    }
+
+    internal static bool ActivateElevated(uint processId, long started)
+    {
+        try
+        {
+            using var prism = Process.GetProcessById(checked((int)processId));
+            using var current = Process.GetCurrentProcess();
+            if (prism.SessionId != current.SessionId || started == 0 || Native.ProcessCreationTime(processId) != started ||
+                Native.ProcessImage(processId) is not { } path || !IsTrayClient(path)) return false;
+            nint window = FindWindow(path);
+            return window != 0 && Native.WindowProcessId(window) == processId && ActivateWindow(window).GetAwaiter().GetResult();
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or OverflowException)
+        { return false; }
     }
 
     private static async Task<Endpoint?> ReadConnection(string folder)

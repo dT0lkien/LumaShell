@@ -56,7 +56,7 @@ internal sealed class Desktop
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
         Action nativeTray, Action toggleTaskbar, Action update, Updates releases, Action openLauncher, Action toggleWin,
-        Action toggleStartup, Action<string?> openFinder, Action applyWallpaper)
+        Action toggleStartup, Action<string?> openFinder, Action applyWallpaper, Action toggleFolderRouting)
     {
         this.settings = settings;
         this.openLauncher = openLauncher;
@@ -92,6 +92,7 @@ internal sealed class Desktop
         [Entry(settings.HideWindowsTaskbar ? "Вернуть панель задач Windows" : "Скрыть панель задач Windows", toggleTaskbar),
             Entry(settings.StyleExplorerFrame ? "Вернуть рамку Проводника Windows" : "Оформить рамку Проводника", ToggleExplorerFrame),
             Entry("Установить обои Luma", applyWallpaper),
+            Entry(settings.RouteFolders ? "Открывать папки в Проводнике Windows" : "Открывать папки в Luma Finder", toggleFolderRouting),
             Entry("Персонализация", () => Launch("ms-settings:personalization")),
             Entry("Параметры панели задач", () => Launch("ms-settings:taskbar"))]));
         left.Children.Add(Menu("Окно", WindowEntries));

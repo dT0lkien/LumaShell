@@ -38,19 +38,33 @@ internal sealed class App : Application
     private Rect lastArea = Rect.Empty;
     private DateTimeOffset keepDockUntil;
     private readonly SemaphoreSlim startupGate = new(1);
+    private readonly CancellationTokenSource folderRequests = new();
+    private string? initialFolder;
 
     [STAThread]
     private static void Main(string[] args)
     {
         if (Worker.Handle(args)) return;
+        string? folder = FolderRouting.ReadArgument(args);
+        if (args.Length > 0 && args[0] == FolderRouting.Argument && folder is null) return;
         using var instance = new Mutex(true, @"Local\LumaShell.Overlay", out bool first);
-        if (!first) return;
+        if (!first)
+        {
+            if (folder is not null && !FolderRouting.Forward(folder))
+            {
+                var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+                var window = new FinderWindow();
+                app.Startup += (_, _) => window.OpenFolder(folder);
+                app.Run();
+            }
+            return;
+        }
         var preferences = Preferences.Load();
         if (args.Length > 0 && args[0] == LogonStartup.Argument && !preferences.AutoStart) return;
         using var taskbar = new Taskbar();
         Taskbar.Recover();
         taskbar.SetEnabled(preferences.Chrome && preferences.HideWindowsTaskbar);
-        new App { ShutdownMode = ShutdownMode.OnExplicitShutdown, preferences = preferences, taskbar = taskbar }.Run();
+        new App { ShutdownMode = ShutdownMode.OnExplicitShutdown, preferences = preferences, taskbar = taskbar, initialFolder = folder }.Run();
     }
 
     protected override void OnStartup(StartupEventArgs args)
@@ -61,13 +75,14 @@ internal sealed class App : Application
         prism = new Prism(preferences);
         network = new PublicNetwork();
         updates = new Updates();
-        launcher = new Launcher();
-        shortcuts = new ShellShortcuts(Dispatcher, screenshots.Begin, ToggleLauncher);
-        if (!shortcuts.Configure(preferences.ReplaceSnip, preferences.WinLauncher)) preferences.ReplaceSnip = preferences.WinLauncher = false;
+        launcher = new Launcher(() => OpenFinder(null));
+        shortcuts = new ShellShortcuts(Dispatcher, screenshots.Begin, ToggleLauncher, OpenDefaultFinder);
+        if (!shortcuts.Configure(preferences.ReplaceSnip, preferences.WinLauncher, preferences.RouteFolders))
+            preferences.ReplaceSnip = preferences.WinLauncher = false;
         island = new Island(screenshots, activity, prism, network, preferences, ToggleSnip);
         desktop = new Desktop(preferences, tab => OpenIsland(tab), screenshots.Begin, screenshots.OpenFolder, CloseFromMenu,
             taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher,
-            ToggleWin, ToggleStartup, OpenFinder, ApplyWallpaper);
+            ToggleWin, ToggleStartup, OpenFinder, ApplyWallpaper, ToggleFolderRouting);
         topBar = new TopBar(desktop.MenuBar);
         islandHandle = new WindowInteropHelper(island.Window).EnsureHandle();
         HwndSource.FromHwnd(islandHandle).AddHook(WindowMessage);
@@ -75,6 +90,7 @@ internal sealed class App : Application
         screenshotHotkey = Native.RegisterScreenshotHotkey(islandHandle);
         nativeTrayHotkey = Native.RegisterTrayHotkey(islandHandle);
         UpdateLauncherHotkey();
+        UpdateFinderHotkey();
         island.ClipboardToggleRequested += ToggleClipboard;
         island.Collapsed += RestoreFocus;
         screenshots.StateChanged += RefreshVisibility;
@@ -100,6 +116,17 @@ internal sealed class App : Application
         ticker.Tick += (_, _) => Tick();
         ticker.Start();
         ConfigureStartup();
+        _ = FolderRouting.Listen(path =>
+        {
+            if (!Dispatcher.HasShutdownStarted)
+                Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => OpenFinder(path)));
+        }, folderRequests.Token);
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (!FolderRouting.Configure(preferences.RouteFolders) && preferences.RouteFolders && Worker.Executable is not null)
+                island.Flash("Windows не подключила открытие папок в Finder");
+        }));
+        if (initialFolder is { } target) OpenFinder(target);
     }
 
     private void Tick()
@@ -130,6 +157,25 @@ internal sealed class App : Application
     }
 
     private void ApplyWallpaper() => island.Flash(Wallpaper.Apply() ? "Обои Luma установлены" : "Не удалось установить обои");
+
+    private void ToggleFolderRouting()
+    {
+        bool enabled = !preferences.RouteFolders;
+        if (!FolderRouting.Configure(enabled))
+        {
+            island.Flash("Не удалось изменить приложение для папок");
+            return;
+        }
+        preferences.RouteFolders = enabled;
+        preferences.Save();
+        shortcuts.Configure(preferences.ReplaceSnip, preferences.WinLauncher, enabled);
+        UpdateFinderHotkey();
+    }
+
+    private void OpenDefaultFinder()
+    {
+        if (shortcuts.FinderAvailable) OpenFinder(null);
+    }
 
     private void OpenFinder(string? path)
     {
@@ -192,6 +238,7 @@ internal sealed class App : Application
         fullscreen = !onDesktop && Native.CoversPrimaryMonitor(underlying);
         bool showChrome = preferences.Chrome && !fullscreen;
         shortcuts.LauncherAvailable = preferences.Chrome && !screenshots.Busy;
+        shortcuts.FinderAvailable = preferences.RouteFolders && !screenshots.Busy;
         if (!shortcuts.LauncherAvailable) launcher.Close();
         if (showChrome && !desktop.MenuBar.IsVisible)
         {
@@ -243,7 +290,7 @@ internal sealed class App : Application
 
     private void ToggleSnip()
     {
-        if (!shortcuts.Configure(!preferences.ReplaceSnip, preferences.WinLauncher))
+        if (!shortcuts.Configure(!preferences.ReplaceSnip, preferences.WinLauncher, preferences.RouteFolders))
         {
             island.Flash("Windows не дала подключить Win+Shift+S");
             return;
@@ -260,7 +307,7 @@ internal sealed class App : Application
 
     private void ToggleWin()
     {
-        if (!shortcuts.Configure(preferences.ReplaceSnip, !preferences.WinLauncher))
+        if (!shortcuts.Configure(preferences.ReplaceSnip, !preferences.WinLauncher, preferences.RouteFolders))
         {
             island.Flash("Windows не дала подключить клавишу Win");
             return;
@@ -280,6 +327,17 @@ internal sealed class App : Application
         }
         else if (shortcuts.Launcher)
             shortcuts.LauncherHotkeyRegistered = Native.RegisterLauncherHotkey(islandHandle);
+    }
+
+    private void UpdateFinderHotkey()
+    {
+        if (shortcuts.FinderHotkeyRegistered && !shortcuts.Finder)
+        {
+            shortcuts.FinderHotkeyRegistered = false;
+            Native.UnregisterHotKey(islandHandle, Native.FinderHotkey);
+        }
+        else if (!shortcuts.FinderHotkeyRegistered && shortcuts.Finder)
+            shortcuts.FinderHotkeyRegistered = Native.RegisterFinderHotkey(islandHandle);
     }
 
     private void UpdateFromMenu()
@@ -338,6 +396,11 @@ internal sealed class App : Application
             handled = true;
             if (shortcuts.LauncherHotkeyRegistered) ToggleLauncher();
         }
+        if (message == Native.HotkeyMessage && wParam == Native.FinderHotkey)
+        {
+            handled = true;
+            if (shortcuts.FinderHotkeyRegistered) OpenDefaultFinder();
+        }
         return 0;
     }
 
@@ -385,6 +448,7 @@ internal sealed class App : Application
     protected override void OnExit(ExitEventArgs args)
     {
         ticker?.Stop();
+        folderRequests.Cancel();
         desktop?.RestoreExplorerFrame();
         if (screenshots is not null) screenshots.StateChanged -= RefreshVisibility;
         shortcuts?.Dispose();
@@ -397,6 +461,7 @@ internal sealed class App : Application
         if (screenshotHotkey) Native.UnregisterHotKey(islandHandle, Native.ScreenshotHotkey);
         if (nativeTrayHotkey) Native.UnregisterHotKey(islandHandle, Native.TrayHotkey);
         if (shortcuts?.LauncherHotkeyRegistered == true) Native.UnregisterHotKey(islandHandle, Native.LauncherHotkey);
+        if (shortcuts?.FinderHotkeyRegistered == true) Native.UnregisterHotKey(islandHandle, Native.FinderHotkey);
         if (island?.ClipboardEnabled == true) Native.RemoveClipboardFormatListener(islandHandle);
         if (tray is not null)
         {

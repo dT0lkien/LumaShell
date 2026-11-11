@@ -13,6 +13,7 @@ internal sealed class ShellShortcuts : IDisposable
     private readonly Dispatcher pump;
     private readonly Action capture;
     private readonly Action openLauncher;
+    private readonly Action openFinder;
     private readonly WinTap tap = new();
     private readonly Callback callback;
     private Input heldWin;
@@ -20,14 +21,18 @@ internal sealed class ShellShortcuts : IDisposable
     private bool suppressS;
     internal bool Snip { get; private set; }
     internal bool Launcher { get; private set; }
+    internal bool Finder { get; private set; }
     internal volatile bool LauncherAvailable;
     internal volatile bool LauncherHotkeyRegistered;
+    internal volatile bool FinderAvailable;
+    internal volatile bool FinderHotkeyRegistered;
 
-    internal ShellShortcuts(Dispatcher ui, Action capture, Action openLauncher)
+    internal ShellShortcuts(Dispatcher ui, Action capture, Action openLauncher, Action openFinder)
     {
         this.ui = ui;
         this.capture = capture;
         this.openLauncher = openLauncher;
+        this.openFinder = openFinder;
         callback = OnKey;
         var ready = new TaskCompletionSource<Dispatcher>(TaskCreationOptions.RunContinuationsAsynchronously);
         var worker = new Thread(() =>
@@ -40,15 +45,16 @@ internal sealed class ShellShortcuts : IDisposable
         pump = ready.Task.GetAwaiter().GetResult();
     }
 
-    internal bool Configure(bool snip, bool launcher) => pump.Invoke(() =>
+    internal bool Configure(bool snip, bool launcher, bool finder) => pump.Invoke(() =>
     {
-        if ((snip || launcher) && hook == 0)
+        if ((snip || launcher || finder) && hook == 0)
         {
             hook = SetWindowsHookExW(13, callback, GetModuleHandleW(null), 0);
             if (hook == 0) return false;
         }
         Snip = snip;
         Launcher = launcher;
+        Finder = finder;
         return true;
     });
 
@@ -62,15 +68,21 @@ internal sealed class ShellShortcuts : IDisposable
         bool win = key is 0x5B or 0x5C;
         bool modified = win && down && (Down(0x10) || Down(0x11) || Down(0x12) || Down(key == 0x5B ? 0x5C : 0x5B));
         bool intercept = Launcher && LauncherAvailable;
-        switch (tap.Handle(key, down, intercept, modified))
+        switch (tap.Handle(key, down, intercept, modified, Finder && FinderAvailable))
         {
             case WinTap.Action.Hold:
                 heldWin = Keyboard(data, key, false);
                 return 1;
             case WinTap.Action.Launch:
                 // A real WM_HOTKEY gives the UI permission to activate from another app.
-                if (!LauncherHotkeyRegistered || !SendLauncherHotkey())
+                if (!LauncherHotkeyRegistered || !SendActivationHotkey(Native.LauncherActivationKey))
                     ui.BeginInvoke(DispatcherPriority.Input, openLauncher);
+                return 1;
+            case WinTap.Action.OpenFolder:
+                if (!FinderHotkeyRegistered || !SendActivationHotkey(Native.FinderActivationKey))
+                    ui.BeginInvoke(DispatcherPriority.Input, openFinder);
+                return 1;
+            case WinTap.Action.Suppress:
                 return 1;
             case WinTap.Action.ReplayTap:
                 SendInput(2, [heldWin, Keyboard(data, key, true)], Marshal.SizeOf<Input>());
@@ -96,9 +108,9 @@ internal sealed class ShellShortcuts : IDisposable
 
     private nint Next(int code, nint message, nint data) => CallNextHookEx(hook, code, message, data);
 
-    private static bool SendLauncherHotkey()
+    private static bool SendActivationHotkey(ushort key)
     {
-        var down = new Input { Type = 1, Data = new() { Key = new() { Key = Native.LauncherActivationKey } } };
+        var down = new Input { Type = 1, Data = new() { Key = new() { Key = key } } };
         var up = down;
         up.Data.Key.Flags = 2;
         int size = Marshal.SizeOf<Input>();

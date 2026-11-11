@@ -17,6 +17,7 @@ namespace LumaShell;
 
 internal sealed class Launcher
 {
+    private readonly Action openFinder;
     private readonly Window window = Overlay("Luma • Приложения", 600, 470);
     private readonly TextBox query = new() { FontSize = 19, Foreground = White, Background = Brushes.Transparent,
         BorderThickness = new Thickness(0), CaretBrush = White, Padding = new Thickness(7, 7, 0, 7), MaxLength = 160 };
@@ -27,8 +28,9 @@ internal sealed class Launcher
     private CatalogItem[]? catalog;
     private bool loading;
 
-    internal Launcher()
+    internal Launcher(Action openFinder)
     {
+        this.openFinder = openFinder;
         window.ShowActivated = true;
         results.ItemContainerStyle = ItemStyle();
         var layout = new DockPanel();
@@ -174,6 +176,13 @@ internal sealed class Launcher
 
     private void Run(CatalogItem item)
     {
+        if (item.Target.Equals(@"shell:AppsFolder\Microsoft.Windows.Explorer", StringComparison.OrdinalIgnoreCase) ||
+            item.Target.Equals(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"), StringComparison.OrdinalIgnoreCase))
+        {
+            Close();
+            openFinder();
+            return;
+        }
         bool launched = item.Target.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)
             ? Desktop.Launch("explorer.exe", $"\"{item.Target}\"") : Desktop.Launch(item.Target);
         if (launched) Close();

@@ -28,7 +28,7 @@ internal sealed class FinderWindow : Window
     private static readonly Brush SidebarColor = Paint("#FF1B211C");
     private static readonly Brush Stroke = Paint("#FF3B463D");
     private static readonly Brush ToolColor = Paint("#FF29332B");
-    private static readonly Brush Stripe = Paint("#FF283129");
+    private static readonly Brush Stripe = Paint("#78364137");
     private static readonly Brush Selection = Paint("#FF274D68");
     private static readonly Brush Secondary = Paint("#FFADB8AF");
     private static readonly Brush Accent = Paint("#FF84C8FF");
@@ -77,11 +77,12 @@ internal sealed class FinderWindow : Window
         Foreground = White;
         FontFamily = new FontFamily("Segoe UI Variable, Segoe UI");
         UseLayoutRounding = true;
-        WindowChrome.SetWindowChrome(this, new WindowChrome
+        var chrome = new WindowChrome
         {
             CaptionHeight = 48, ResizeBorderThickness = new Thickness(6),
             CornerRadius = new CornerRadius(17), GlassFrameThickness = new Thickness(0), UseAeroCaptionButtons = false
-        });
+        };
+        WindowChrome.SetWindowChrome(this, chrome);
 
         var layout = new Grid();
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(184) });
@@ -161,7 +162,9 @@ internal sealed class FinderWindow : Window
         DockPanel.SetDock(footer, Dock.Bottom);
         content.Children.Add(footer);
         content.Children.Add(list);
-        Content = new Border { Background = BackgroundColor, BorderBrush = Stroke, BorderThickness = new Thickness(1), Child = layout };
+        var frame = new Border { Background = BackgroundColor, BorderBrush = Stroke, BorderThickness = new Thickness(1), Child = layout };
+        Content = frame;
+        SourceInitialized += (_, _) => ApplyBackdrop(chrome, frame, sideSurface);
 
         ConfigureList();
         search.TextChanged += (_, _) => RenderEntries();
@@ -190,6 +193,33 @@ internal sealed class FinderWindow : Window
     }
 
     internal nint Handle => new WindowInteropHelper(this).Handle;
+
+    private void ApplyBackdrop(WindowChrome chrome, Border frame, Border sidebar)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621) || SystemParameters.HighContrast ||
+            HwndSource.FromHwnd(Handle)?.CompositionTarget is not { } target) return;
+        try
+        {
+            const string key = @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+            if (Microsoft.Win32.Registry.GetValue(key, "EnableTransparency", 1) is 0) return;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        { return; }
+
+        int acrylic = 3;
+        if (DwmSetWindowAttribute(Handle, 38, ref acrylic, sizeof(int)) < 0) return;
+        int dark = 1, rounded = 2;
+        DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int));
+        DwmSetWindowAttribute(Handle, 33, ref rounded, sizeof(int));
+        chrome.GlassFrameThickness = new Thickness(-1);
+        target.BackgroundColor = Colors.Transparent;
+        Background = Brushes.Transparent;
+        frame.Background = Paint("#B21C2821");
+        sidebar.Background = Paint("#A117211A");
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint window, int attribute, ref int value, int size);
 
     internal void OpenFolder(string? target)
     {
@@ -362,7 +392,7 @@ internal sealed class FinderWindow : Window
     private static Style HeaderStyle()
     {
         var border = new FrameworkElementFactory(typeof(Border));
-        border.SetValue(Border.BackgroundProperty, BackgroundColor);
+        border.SetValue(Border.BackgroundProperty, Brushes.Transparent);
         border.SetValue(Border.BorderBrushProperty, Stroke);
         border.SetValue(Border.BorderThicknessProperty, new Thickness(0, 0, 0, 1));
         border.SetValue(Border.PaddingProperty, new Thickness(7, 0, 2, 0));
@@ -700,7 +730,7 @@ internal sealed class FinderWindow : Window
 
     private void OpenInExplorer()
     {
-        if (folder is { } path) Desktop.Launch("explorer.exe", $"\"{path}\"");
+        if (folder is { } path) Desktop.Launch("explorer.exe", $"/e,\"{Path.TrimEndingDirectorySeparator(path)}\\.\"");
     }
 
     private void StartAddress()
