@@ -1,10 +1,13 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -54,6 +57,7 @@ internal static class FinderPreview
             search.Clear();
 
             VerifyShellMenu(assembly, desktop, sandbox);
+            VerifyHiddenWindow(assembly);
 
             list.SelectedIndex = 0;
             window.UpdateLayout();
@@ -88,6 +92,7 @@ internal static class FinderPreview
         Console.WriteLine($"Selection commands: {string.Join(", ", selection)}");
         Console.WriteLine($"Executable commands: {string.Join(", ", program)}");
         if (Array.FindIndex(document, verb => verb.Equals("delete", StringComparison.OrdinalIgnoreCase)) < 0 ||
+            Array.FindIndex(document, verb => verb.Equals("openas", StringComparison.OrdinalIgnoreCase)) < 0 ||
             Array.FindIndex(selection, verb => verb.Equals("delete", StringComparison.OrdinalIgnoreCase)) < 0 ||
             Array.FindIndex(program, verb => verb.Equals("runas", StringComparison.OrdinalIgnoreCase)) < 0)
             throw new InvalidOperationException("The Windows Shell did not supply the expected Finder commands.");
@@ -98,6 +103,31 @@ internal static class FinderPreview
         if (bitmap.PixelWidth < 1600 || bitmap.PixelHeight < 900)
             throw new InvalidOperationException("The bundled wallpaper has unexpected dimensions.");
     }
+
+    private static void VerifyHiddenWindow(Assembly assembly)
+    {
+        var hidden = new Window { Title = "Luma tray restore probe", Width = 240, Height = 100 };
+        try
+        {
+            hidden.Show();
+            nint handle = new WindowInteropHelper(hidden).Handle;
+            hidden.Hide();
+            var name = new StringBuilder(128);
+            if (GetClassName(handle, name, name.Capacity) == 0)
+                throw new InvalidOperationException("Could not identify the hidden test window.");
+            var type = assembly.GetType("LumaShell.Native", throwOnError: true)!;
+            MethodInfo Method(string method) => type.GetMethod(method, BindingFlags.Static | BindingFlags.NonPublic)!;
+            var found = (nint)Method("FindTitledWindow").Invoke(null, [Environment.ProcessPath!, name.ToString(), hidden.Title])!;
+            if (found != handle || !(bool)Method("ShowApplicationWindow").Invoke(null, [found])!)
+                throw new InvalidOperationException("The tray restore path did not find and show the hidden window.");
+            PumpUntil(() => (bool)Method("IsApplicationWindowShown").Invoke(null, [found])!, "showing a hidden application window");
+            Console.WriteLine("The tray restore path located and showed a hidden application window.");
+        }
+        finally { hidden.Close(); }
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(nint window, StringBuilder name, int capacity);
 
     private static void PumpUntil(Func<bool> finished, string description)
     {

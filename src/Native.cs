@@ -163,6 +163,33 @@ internal static class Native
 
     internal static bool RestoreWindow(nint window) => ShowWindowAsync(window, 4);
 
+    internal static bool ShowApplicationWindow(nint window) => ShowWindowAsync(window, IsIconic(window) ? 9 : 5);
+    internal static bool IsApplicationWindowShown(nint window) => IsWindowVisible(window) && !IsIconic(window);
+
+    internal static nint FindTitledWindow(string executable, string className, string title)
+    {
+        nint match = 0;
+        var text = new StringBuilder(128);
+        EnumWindows((window, _) =>
+        {
+            text.Clear();
+            if (GetClassName(window, text, text.Capacity) == 0 ||
+                !text.ToString().Equals(className, StringComparison.Ordinal) || GetWindow(window, 4) != 0) return true;
+            text.Clear();
+            if (GetWindowText(window, text, text.Capacity) == 0 ||
+                !text.ToString().Equals(title, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Executable(window), executable, StringComparison.OrdinalIgnoreCase)) return true;
+            if (match != 0)
+            {
+                match = 0;
+                return false;
+            }
+            match = window;
+            return true;
+        }, 0);
+        return match;
+    }
+
     internal static void Shortcut(byte modifier, byte key)
     {
         keybd_event(modifier, 0, 1, 0);

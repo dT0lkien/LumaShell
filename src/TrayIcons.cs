@@ -27,6 +27,7 @@ internal sealed class TrayIcons
     private TraySnapshot.Item? selected;
     private bool refreshing;
     private bool busy;
+    private bool openingWindow;
 
     internal FrameworkElement View => toggle;
 
@@ -129,11 +130,18 @@ internal sealed class TrayIcons
         }
     }
 
-    private void OpenWindow(TraySnapshot.Item item)
+    private async Task OpenWindow(TraySnapshot.Item item)
     {
-        var window = Native.OpenWindows().FirstOrDefault(candidate => candidate.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase));
-        if (window is not null && Native.FocusWindow(window.Handle)) popup.IsOpen = false;
-        else status.Text = "Windows не предоставила действие значка. Открытого окна тоже нет.";
+        if (openingWindow) return;
+        openingWindow = true;
+        try
+        {
+            var window = Native.OpenWindows().FirstOrDefault(candidate => candidate.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase));
+            if ((window is not null && Native.FocusWindow(window.Handle)) || await Prism.OpenFromTray(item.Path))
+                popup.IsOpen = false;
+            else status.Text = "Не удалось открыть окно. Системный трей доступен по Ctrl+Alt+B.";
+        }
+        finally { openingWindow = false; }
     }
 
     private void ShowActions(TraySnapshot.Item item, FrameworkElement row, bool allowBusy = false)
@@ -159,7 +167,7 @@ internal sealed class TrayIcons
         var title = Text(item.Title, 13, bold: true);
         title.Margin = new Thickness(3, 0, 3, 6);
         actions.Children.Add(title);
-        AddAction("Открыть окно", () => OpenWindow(item));
+        AddAction(Prism.IsTrayClient(item.Path) ? "Открыть Prism" : "Открыть окно", async () => await OpenWindow(item));
         AddAction("Родное меню значка", () => ActivateIcon(item, true, null));
         if (TrayAppActions.IsLuma(item.Path)) AddAction("Выйти из Luma", exitLuma);
         else if (TrayAppActions.CanEnd(item.Path)) AddAction("Завершить приложение…", () => ConfirmEnd(item));
@@ -187,6 +195,11 @@ internal sealed class TrayIcons
     private async void ActivateIcon(TraySnapshot.Item item, bool contextMenu, FrameworkElement? button)
     {
         if (busy) return;
+        if (!contextMenu && Prism.IsTrayClient(item.Path))
+        {
+            await OpenWindow(item);
+            return;
+        }
         var anchor = trayPanel.PointToScreen(new Point(0, 0));
         busy = true;
         try
@@ -195,7 +208,7 @@ internal sealed class TrayIcons
             bool opened = await Task.Run(() => NativeTrayMenu.TryActivate(item, contextMenu));
             if (!opened && popup.IsOpen)
             {
-                if (!contextMenu) OpenWindow(item);
+                if (!contextMenu) await OpenWindow(item);
                 else
                 {
                     status.Text = "Windows не предоставила меню значка. Доступны действия Luma слева.";

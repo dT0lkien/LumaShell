@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -119,7 +120,7 @@ internal sealed class Prism(Preferences settings) : IDisposable
         {
             using (process)
                 if (Native.ProcessImage((uint)process.Id) is { } app)
-                    roots.Add(Path.Combine(Path.GetDirectoryName(app)!, "resources", "core", "win", "sing-box.exe"));
+                    foreach (string core in CoreLocations(app)) roots.Add(core);
         }
         if (roots.Count == 0) return false;
         foreach (var process in Process.GetProcessesByName("sing-box"))
@@ -128,6 +129,54 @@ internal sealed class Prism(Preferences settings) : IDisposable
                 if (Native.ProcessImage((uint)process.Id) is { } path && roots.Contains(path)) return true;
         }
         return false;
+    }
+
+    private static IEnumerable<string> CoreLocations(string executable)
+    {
+        string folder = Path.Combine(Path.GetDirectoryName(executable)!, "resources", "core");
+        yield return Path.Combine(folder, "sing-box.exe");
+        yield return Path.Combine(folder, "win", "sing-box.exe");
+    }
+
+    internal static bool IsTrayClient(string path) => Path.IsPathFullyQualified(path) &&
+        Path.GetFileName(path).Equals("Prism.exe", StringComparison.OrdinalIgnoreCase) &&
+        File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "resources", "app.asar")) &&
+        CoreLocations(path).Any(File.Exists);
+
+    internal static async Task<bool> OpenFromTray(string path)
+    {
+        if (!IsTrayClient(path)) return false;
+        nint window = Native.FindTitledWindow(path, "Chrome_WidgetWin_1", "Prism");
+        if (window != 0 && Native.IsApplicationWindowShown(window) && Native.FocusWindow(window)) return true;
+        if (window != 0 && !Native.IsApplicationWindowShown(window) && Native.ShowApplicationWindow(window))
+        {
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                await Task.Delay(50);
+                if (!Native.IsApplicationWindowShown(window)) continue;
+                Native.FocusWindow(window);
+                return true;
+            }
+        }
+
+        // Prism's second-instance handler shows the existing window. Only use it
+        // for the exact running installation in this session.
+        using var current = Process.GetCurrentProcess();
+        bool running = false;
+        foreach (var process in Process.GetProcessesByName("Prism"))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.SessionId == current.SessionId &&
+                        string.Equals(Native.ProcessImage((uint)process.Id), path, StringComparison.OrdinalIgnoreCase))
+                        running = true;
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            }
+        }
+        return running && Desktop.Launch(path);
     }
 
     private static async Task<Endpoint?> ReadConnection(string folder)
