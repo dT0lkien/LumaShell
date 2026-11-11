@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -59,6 +60,7 @@ internal sealed class FinderWindow : Window
     private SortBy sort = SortBy.Name;
     private bool descending;
     private bool copying;
+    private bool showingItemMenu;
     private bool closed;
 
     internal FinderWindow()
@@ -309,10 +311,12 @@ internal sealed class FinderWindow : Window
             }
         };
         list.SelectionChanged += (_, _) => UpdateStatus();
-        list.ContextMenu = Menu([
-            ("Открыть", OpenSelected), ("Копировать", CopySelected), ("Вставить копии", Paste),
-            ("Копировать путь", CopyPath), ("Открыть папку в Проводнике Windows", OpenInExplorer)
-        ]);
+        list.PreviewMouseRightButtonUp += (_, args) =>
+        {
+            args.Handled = true;
+            if (RowUnder(args.OriginalSource) is not null) ShowSelectedMenu(list.PointToScreen(args.GetPosition(list)));
+            else ShowBackgroundMenu();
+        };
     }
 
     private ListViewItem? RowUnder(object source) => source is DependencyObject visual
@@ -562,6 +566,79 @@ internal sealed class FinderWindow : Window
 
     private string[] SelectedPaths() => list.SelectedItems.OfType<FinderEntry>().Select(item => item.Path).ToArray();
 
+    private void ShowSelectedMenu(Point location)
+    {
+        if (showingItemMenu || list.SelectedItem is not FinderEntry selected) return;
+        string[] paths = SelectedPaths();
+        showingItemMenu = true;
+        try
+        {
+            switch (FinderShellMenu.Show(Handle, location, paths, paths.Length == 1 && selected.IsDirectory))
+            {
+                case FinderShellMenu.Result.OpenFolder:
+                    Navigate(selected.Path);
+                    break;
+                case FinderShellMenu.Result.CopyPath:
+                    CopyPath(string.Join(Environment.NewLine, paths));
+                    break;
+                case FinderShellMenu.Result.Invoked:
+                    Reload();
+                    break;
+                case FinderShellMenu.Result.Failed:
+                    status.Text = "Windows не удалось выполнить команду";
+                    break;
+                case FinderShellMenu.Result.Unavailable:
+                    ShowFallbackMenu(selected, paths);
+                    break;
+            }
+        }
+        finally { showingItemMenu = false; }
+    }
+
+    private void ShowFallbackMenu(FinderEntry selected, string[] paths)
+    {
+        var commands = new List<(string, Action)> { ("Открыть", OpenSelected) };
+        if (paths.Length == 1 && !selected.IsDirectory)
+        {
+            commands.Add(("Открыть с помощью…", () => RunVerb(selected.Path, "openas")));
+            if (selected.Extension.ToLowerInvariant() is ".exe" or ".com" or ".cmd" or ".bat")
+                commands.Add(("Запуск от имени администратора", () => RunVerb(selected.Path, "runas")));
+        }
+        commands.Add(("Копировать", CopySelected));
+        commands.Add(("Копировать путь", () => CopyPath(string.Join(Environment.NewLine, paths))));
+        commands.Add(("Удалить…", () => Delete(paths)));
+        if (paths.Length == 1) commands.Add(("Свойства", () => RunVerb(selected.Path, "properties")));
+        Menu(commands.ToArray()).IsOpen = true;
+    }
+
+    private void ShowBackgroundMenu() => Menu([
+        ("Вставить", Paste), ("Обновить", Reload), ("Открыть в Проводнике Windows", OpenInExplorer)
+    ]).IsOpen = true;
+
+    private void RunVerb(string path, string verb)
+    {
+        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Verb = verb })?.Dispose(); }
+        catch (Win32Exception error) when (error.NativeErrorCode == 1223) { }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or ArgumentException)
+        { status.Text = "Windows не удалось выполнить команду"; }
+    }
+
+    private async void Delete(string[] paths)
+    {
+        if (copying) return;
+        copying = true;
+        try
+        {
+            bool deleted = await FinderFiles.DeleteAsync(Handle, paths);
+            if (!closed)
+            {
+                if (deleted) Reload();
+                else status.Text = "Удаление не завершено";
+            }
+        }
+        finally { copying = false; }
+    }
+
     private void CopySelected()
     {
         var paths = SelectedPaths();
@@ -580,27 +657,43 @@ internal sealed class FinderWindow : Window
     {
         if (copying || folder is not { } target) return;
         string[] paths;
-        try { paths = Clipboard.GetFileDropList().Cast<string>().ToArray(); }
+        bool move = false;
+        uint sequence = FinderFiles.GetClipboardSequenceNumber();
+        try
+        {
+            var clipboard = Clipboard.GetDataObject();
+            paths = clipboard?.GetData(DataFormats.FileDrop) as string[] ?? [];
+            byte[]? effect = clipboard?.GetData("Preferred DropEffect", false) switch
+            {
+                MemoryStream stream => stream.ToArray(),
+                byte[] data => data,
+                _ => null
+            };
+            move = effect is { Length: >= 4 } && BitConverter.ToUInt32(effect) == 2;
+        }
         catch (ExternalException) { status.Text = "Буфер обмена занят"; return; }
         if (paths.Length == 0) return;
         copying = true;
-        status.Text = "Копируем файлы…";
+        status.Text = move ? "Перемещаем файлы…" : "Копируем файлы…";
         try
         {
-            bool copied = await FinderFiles.CopyAsync(Handle, paths, target);
+            bool copied = await FinderFiles.TransferAsync(Handle, paths, target, move);
+            if (copied && move && sequence != 0 && FinderFiles.GetClipboardSequenceNumber() == sequence)
+            {
+                try { Clipboard.Clear(); }
+                catch (ExternalException) { }
+            }
             if (!closed && folder == target)
             {
                 if (copied) Reload();
-                else status.Text = "Копирование не завершено";
+                else status.Text = move ? "Перемещение не завершено" : "Копирование не завершено";
             }
         }
         finally { copying = false; }
     }
 
-    private void CopyPath()
+    private void CopyPath(string path)
     {
-        string? path = (list.SelectedItem as FinderEntry)?.Path ?? folder;
-        if (path is null) return;
         try { Clipboard.SetText(path); status.Text = "Путь скопирован"; }
         catch (ExternalException) { status.Text = "Буфер обмена занят"; }
     }
@@ -641,6 +734,12 @@ internal sealed class FinderWindow : Window
             else GoHistory(args.SystemKey == Key.Left ? -1 : 1);
         }
         else if (args.Key == Key.F5) Reload();
+        else if (list.IsKeyboardFocusWithin && (args.Key == Key.Apps || args.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift))
+        {
+            if (list.ItemContainerGenerator.ContainerFromItem(list.SelectedItem) is ListViewItem row && row.IsVisible)
+                ShowSelectedMenu(row.PointToScreen(new Point(16, row.ActualHeight)));
+            else ShowBackgroundMenu();
+        }
         else if (args.Key == Key.Enter && list.IsKeyboardFocusWithin) OpenSelected();
         else return;
         args.Handled = true;

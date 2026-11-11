@@ -53,6 +53,8 @@ internal static class FinderPreview
             if (list.Items.Count != 2) throw new InvalidOperationException("Folder search did not filter the displayed rows.");
             search.Clear();
 
+            VerifyShellMenu(assembly, desktop, sandbox);
+
             list.SelectedIndex = 0;
             window.UpdateLayout();
             PumpUntil(() => Find<TextBlock>(list, label => label.Text == "Архив") is not null, "rendered file names");
@@ -70,6 +72,31 @@ internal static class FinderPreview
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
         }
+    }
+
+    private static void VerifyShellMenu(Assembly assembly, string folder, string sandbox)
+    {
+        var read = assembly.GetType("LumaShell.FinderShellMenu", throwOnError: true)!
+            .GetMethod("ReadVerbs", BindingFlags.Static | BindingFlags.NonPublic)!;
+        string[] Read(params string[] files) => (string[])read.Invoke(null, [files])!;
+        var document = Read(Path.Combine(folder, "Заметки.txt"));
+        var selection = Read(Path.Combine(folder, "Заметки.txt"), Path.Combine(folder, "Список задач.txt"));
+        string executable = Path.Combine(sandbox, "Sample.exe");
+        File.Copy(Environment.ProcessPath!, executable);
+        var program = Read(executable);
+        Console.WriteLine($"Document commands: {string.Join(", ", document)}");
+        Console.WriteLine($"Selection commands: {string.Join(", ", selection)}");
+        Console.WriteLine($"Executable commands: {string.Join(", ", program)}");
+        if (Array.FindIndex(document, verb => verb.Equals("delete", StringComparison.OrdinalIgnoreCase)) < 0 ||
+            Array.FindIndex(selection, verb => verb.Equals("delete", StringComparison.OrdinalIgnoreCase)) < 0 ||
+            Array.FindIndex(program, verb => verb.Equals("runas", StringComparison.OrdinalIgnoreCase)) < 0)
+            throw new InvalidOperationException("The Windows Shell did not supply the expected Finder commands.");
+
+        using var wallpaper = assembly.GetManifestResourceStream("LumaShell.AlpineLake.jpg")
+            ?? throw new InvalidOperationException("The bundled wallpaper is missing.");
+        var bitmap = BitmapDecoder.Create(wallpaper, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames[0];
+        if (bitmap.PixelWidth < 1600 || bitmap.PixelHeight < 900)
+            throw new InvalidOperationException("The bundled wallpaper has unexpected dimensions.");
     }
 
     private static void PumpUntil(Func<bool> finished, string description)

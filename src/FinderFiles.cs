@@ -94,7 +94,12 @@ internal static class FinderFiles
         return image;
     }
 
-    internal static Task<bool> CopyAsync(nint owner, string[] sources, string target)
+    internal static Task<bool> TransferAsync(nint owner, string[] sources, string target, bool move) =>
+        OperateAsync(owner, sources, target, move ? 1u : 2u);
+
+    internal static Task<bool> DeleteAsync(nint owner, string[] sources) => OperateAsync(owner, sources, null, 3);
+
+    private static Task<bool> OperateAsync(nint owner, string[] sources, string? target, uint operationKind)
     {
         var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
@@ -102,7 +107,7 @@ internal static class FinderFiles
             nint from = 0, to = 0;
             try
             {
-                if (!Directory.Exists(target) || sources.Length == 0 ||
+                if ((target is not null && !Directory.Exists(target)) || sources.Length == 0 ||
                     sources.Any(path => !Path.IsPathFullyQualified(path) || path.Contains('\0')))
                 {
                     done.TrySetResult(false);
@@ -110,8 +115,8 @@ internal static class FinderFiles
                 }
                 // SHFileOperation expects double-NUL-terminated lists. Windows owns conflict dialogs.
                 from = Marshal.StringToHGlobalUni(string.Join('\0', sources) + '\0');
-                to = Marshal.StringToHGlobalUni(target + '\0');
-                var operation = new FileOperation { Window = owner, Operation = 2, From = from, To = to, Flags = 0x40 };
+                if (target is not null) to = Marshal.StringToHGlobalUni(target + '\0');
+                var operation = new FileOperation { Window = owner, Operation = operationKind, From = from, To = to, Flags = 0x40 };
                 done.TrySetResult(SHFileOperation(ref operation) == 0 && !operation.Aborted);
             }
             catch (Exception error) when (error is ArgumentException or IOException or UnauthorizedAccessException or ExternalException)
@@ -121,7 +126,7 @@ internal static class FinderFiles
                 if (from != 0) Marshal.FreeHGlobal(from);
                 if (to != 0) Marshal.FreeHGlobal(to);
             }
-        }) { IsBackground = true, Name = "Luma Finder file copy" };
+        }) { IsBackground = true, Name = "Luma Finder file operation" };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         return done.Task;
@@ -156,6 +161,8 @@ internal static class FinderFiles
     private static extern int SHFileOperation(ref FileOperation operation);
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(nint icon);
+    [DllImport("user32.dll")]
+    internal static extern uint GetClipboardSequenceNumber();
     [DllImport("ole32.dll")]
     private static extern int CoInitializeEx(nint reserved, uint apartment);
     [DllImport("ole32.dll")]

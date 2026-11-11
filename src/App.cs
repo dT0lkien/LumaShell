@@ -67,7 +67,7 @@ internal sealed class App : Application
         island = new Island(screenshots, activity, prism, network, preferences, ToggleSnip);
         desktop = new Desktop(preferences, tab => OpenIsland(tab), screenshots.Begin, screenshots.OpenFolder, CloseFromMenu,
             taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher,
-            ToggleWin, ToggleStartup, OpenFinder);
+            ToggleWin, ToggleStartup, OpenFinder, ApplyWallpaper);
         topBar = new TopBar(desktop.MenuBar);
         islandHandle = new WindowInteropHelper(island.Window).EnsureHandle();
         HwndSource.FromHwnd(islandHandle).AddHook(WindowMessage);
@@ -128,6 +128,8 @@ internal sealed class App : Application
         if (!preferences.Save()) island.Flash("Не удалось сохранить настройку автозапуска");
         ConfigureStartup(interactive: true);
     }
+
+    private void ApplyWallpaper() => island.Flash(Wallpaper.Apply() ? "Обои Luma установлены" : "Не удалось установить обои");
 
     private void OpenFinder(string? path)
     {

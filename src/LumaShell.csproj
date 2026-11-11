@@ -7,7 +7,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <AssemblyName>LumaShell</AssemblyName>
-    <Version>0.4.1</Version>
+    <Version>0.4.2</Version>
     <Product>Luma Shell</Product>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../assets/Luma.ico</ApplicationIcon>
@@ -17,5 +17,6 @@
     <EmbeddedResource Include="../assets/flags.zip" LogicalName="LumaShell.Flags.zip" />
     <EmbeddedResource Include="../assets/flags-LICENSE.txt" LogicalName="LumaShell.Flags.LICENSE.txt" />
     <EmbeddedResource Include="../assets/uia-LICENSE.txt" LogicalName="LumaShell.UIAutomation.LICENSE.txt" />
+    <EmbeddedResource Include="../assets/Luma-Alpine-Lake.jpg" LogicalName="LumaShell.AlpineLake.jpg" />
   </ItemGroup>
 </Project>
