@@ -56,6 +56,9 @@ jobs:
             $hash = (Get-FileHash "release/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $name" | Add-Content release/SHA256SUMS.txt -Encoding ascii
           }
+      - name: Verify launch of the portable executable
+        shell: pwsh
+        run: ./tools/verify-launch.ps1 -Executable release/LumaShell-win-x64.exe
       - name: Publish on GitHub
         shell: pwsh
         env:

@@ -154,6 +154,12 @@ internal sealed class App : Application
             if (!configured) island.Flash("Не удалось настроить автозапуск");
             else if (interactive) island.Flash(enabled ? "Автозапуск включён" : "Автозапуск выключен");
         }
+        catch (Exception error)
+        {
+            // Registration is optional. Never let a scheduler failure escape onto the UI dispatcher.
+            System.Diagnostics.Trace.TraceError("Luma logon registration: {0}", error);
+            if (!Dispatcher.HasShutdownStarted) island.Flash("Не удалось настроить автозапуск");
+        }
         finally { startupGate.Release(); }
     }
 

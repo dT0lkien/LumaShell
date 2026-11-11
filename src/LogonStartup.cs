@@ -54,7 +54,9 @@ internal static class LogonStartup
             root = connection.GetFolder(@"\");
             dynamic folder = root!;
             try { existing = folder.GetTask(name); }
-            catch (COMException error) when (error.HResult == unchecked((int)0x80070002)) { }
+            // COM automation maps ERROR_FILE_NOT_FOUND to FileNotFoundException on .NET.
+            catch (Exception error) when ((error is FileNotFoundException or COMException) &&
+                error.HResult == unchecked((int)0x80070002)) { }
             if (!enabled)
             {
                 if (existing is not null) folder.DeleteTask(name, 0);
@@ -71,7 +73,7 @@ internal static class LogonStartup
             created = folder.RegisterTask(name, Definition(user, executable!), CreateOrUpdate, user, null, InteractiveToken, null);
             return created is not null;
         }
-        catch (Exception error) when (error is COMException or UnauthorizedAccessException or System.Security.SecurityException or
+        catch (Exception error) when (error is COMException or IOException or UnauthorizedAccessException or System.Security.SecurityException or
             Microsoft.CSharp.RuntimeBinder.RuntimeBinderException or System.Xml.XmlException)
         { return false; }
         finally

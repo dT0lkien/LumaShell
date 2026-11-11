@@ -1,0 +1,81 @@
+param([Parameter(Mandatory)][string]$Executable)
+
+$ErrorActionPreference = 'Stop'
+if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This test uses a disposable Windows desktop and user profile.' }
+
+$app = (Resolve-Path $Executable).Path
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$taskName = "LumaShell-$sid"
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$runCommand = '"{0}" --logon' -f $app
+
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class LumaLaunchProbe
+{
+    delegate bool Callback(IntPtr window, IntPtr state);
+
+    [DllImport("user32")] static extern bool EnumWindows(Callback callback, IntPtr state);
+    [DllImport("user32")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder title, int capacity);
+    [DllImport("user32")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+    [DllImport("kernel32")] public static extern uint SetErrorMode(uint mode);
+
+    public static bool DesktopVisible(uint process)
+    {
+        bool dock = false, island = false;
+        EnumWindows((window, _) =>
+        {
+            GetWindowThreadProcessId(window, out uint pid);
+            if (pid != process || !IsWindowVisible(window)) return true;
+            var title = new StringBuilder(128);
+            GetWindowText(window, title, title.Capacity);
+            dock |= title.ToString() == "Luma • Dock";
+            island |= title.ToString() == "Luma • Dynamic Island";
+            return !(dock && island);
+        }, IntPtr.Zero);
+        return dock && island;
+    }
+}
+'@
+
+[LumaLaunchProbe]::SetErrorMode(3) | Out-Null
+$started = Get-Date
+$process = Start-Process -FilePath $app -PassThru
+try {
+    $visibleFor = 0
+    for ($i = 0; $i -lt 46 -and $visibleFor -lt 14; $i++) {
+        if ($process.WaitForExit(500)) { throw "Luma exited during startup with code $($process.ExitCode)" }
+        if ([LumaLaunchProbe]::DesktopVisible($process.Id)) { $visibleFor++ }
+        else { $visibleFor = 0 }
+    }
+    if ($visibleFor -lt 14) { throw 'The Dock and Island did not stay visible for seven seconds.' }
+
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task -and $task.Actions.Execute -contains $app) {
+        Write-Host 'Fresh-profile startup registered a Task Scheduler logon task.'
+    } elseif ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
+        Write-Host 'Fresh-profile startup registered the Windows Run fallback.'
+    } else {
+        throw 'Luma started but did not register for logon.'
+    }
+    Write-Host 'The published executable kept the Dock and Island visible through startup.'
+} catch {
+    $exeName = [IO.Path]::GetFileName($app)
+    Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$started; Id=1000,1026} -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -like "*$exeName*" } |
+        Select-Object -ExpandProperty Message | Write-Host
+    throw
+} finally {
+    if (!$process.HasExited) { Stop-Process -Id $process.Id -Force }
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task -and $task.Actions.Execute -contains $app) {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    }
+    if ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
+        Remove-ItemProperty $runKey -Name LumaShell
+    }
+}
