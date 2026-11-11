@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -19,6 +20,7 @@ internal sealed class App : Application
     private PublicNetwork network = null!;
     private Island island = null!;
     private Desktop desktop = null!;
+    private FinderWindow? finder;
     private TopBar topBar = null!;
     private Taskbar taskbar = null!;
     private Updates updates = null!;
@@ -35,6 +37,7 @@ internal sealed class App : Application
     private int ticks;
     private Rect lastArea = Rect.Empty;
     private DateTimeOffset keepDockUntil;
+    private readonly SemaphoreSlim startupGate = new(1);
 
     [STAThread]
     private static void Main(string[] args)
@@ -42,26 +45,29 @@ internal sealed class App : Application
         if (Worker.Handle(args)) return;
         using var instance = new Mutex(true, @"Local\LumaShell.Overlay", out bool first);
         if (!first) return;
-        new App { ShutdownMode = ShutdownMode.OnExplicitShutdown }.Run();
+        var preferences = Preferences.Load();
+        if (args.Length > 0 && args[0] == LogonStartup.Argument && !preferences.AutoStart) return;
+        using var taskbar = new Taskbar();
+        Taskbar.Recover();
+        taskbar.SetEnabled(preferences.Chrome && preferences.HideWindowsTaskbar);
+        new App { ShutdownMode = ShutdownMode.OnExplicitShutdown, preferences = preferences, taskbar = taskbar }.Run();
     }
 
     protected override void OnStartup(StartupEventArgs args)
     {
         base.OnStartup(args);
-        preferences = Preferences.Load();
         screenshots = new Screenshots(preferences);
         activity = new Activity();
         prism = new Prism(preferences);
         network = new PublicNetwork();
-        taskbar = new Taskbar();
-        Taskbar.Recover();
         updates = new Updates();
         launcher = new Launcher();
         shortcuts = new ShellShortcuts(Dispatcher, screenshots.Begin, ToggleLauncher);
         if (!shortcuts.Configure(preferences.ReplaceSnip, preferences.WinLauncher)) preferences.ReplaceSnip = preferences.WinLauncher = false;
         island = new Island(screenshots, activity, prism, network, preferences, ToggleSnip);
         desktop = new Desktop(preferences, tab => OpenIsland(tab), screenshots.Begin, screenshots.OpenFolder, CloseFromMenu,
-            taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher, ToggleWin);
+            taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher,
+            ToggleWin, ToggleStartup, OpenFinder);
         topBar = new TopBar(desktop.MenuBar);
         islandHandle = new WindowInteropHelper(island.Window).EnsureHandle();
         HwndSource.FromHwnd(islandHandle).AddHook(WindowMessage);
@@ -79,7 +85,7 @@ internal sealed class App : Application
         taskbar.Failed += () => island.Flash("Не удалось скрыть панель задач Windows");
         updates.Changed += () => island.Flash(updates.Status);
         topBar.Enable(preferences.Chrome);
-        taskbar.SetEnabled(preferences.Chrome && preferences.HideWindowsTaskbar);
+        if (taskbar.Faulted) island.Flash("Не удалось скрыть панель задач Windows");
         PlaceWindows(true);
         RefreshVisibility();
         island.RefreshClock(true);
@@ -93,10 +99,12 @@ internal sealed class App : Application
         ticker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         ticker.Tick += (_, _) => Tick();
         ticker.Start();
+        ConfigureStartup();
     }
 
     private void Tick()
     {
+        if (preferences.Chrome && preferences.HideWindowsTaskbar) taskbar.SetEnabled(true);
         taskbar.Tick();
         PlaceWindows();
         RefreshVisibility();
@@ -108,11 +116,45 @@ internal sealed class App : Application
         if (ticks % 10 == 0) island.RefreshMedia();
         if (ticks % 15 == 0) activity.Refresh();
         if (ticks % 20 == 0 && desktop.MenuBar.IsVisible) desktop.RefreshTray();
-        if (ticks % 25 == 0 && preferences.Chrome && preferences.HideWindowsTaskbar) taskbar.SetEnabled(true);
         if (ticks % 30 == 0) prism.Refresh();
         if (ticks % 300 == 0) network.Refresh();
         if (ticks % 50 == 0) desktop.RefreshClock();
         if (ticks % 108000 == 75) updates.Check();
+    }
+
+    private void ToggleStartup()
+    {
+        preferences.AutoStart = !preferences.AutoStart;
+        if (!preferences.Save()) island.Flash("Не удалось сохранить настройку автозапуска");
+        ConfigureStartup(interactive: true);
+    }
+
+    private void OpenFinder(string? path)
+    {
+        if (finder is null)
+        {
+            finder = new FinderWindow();
+            finder.Closed += (_, _) =>
+            {
+                finder = null;
+                desktop.SetFinderHandle(0);
+            };
+        }
+        finder.OpenFolder(path);
+        desktop.SetFinderHandle(finder.Handle);
+    }
+
+    private async void ConfigureStartup(bool interactive = false)
+    {
+        await startupGate.WaitAsync();
+        try
+        {
+            bool enabled = preferences.AutoStart;
+            bool configured = await Task.Run(() => LogonStartup.Configure(enabled));
+            if (!configured) island.Flash("Не удалось настроить автозапуск");
+            else if (interactive) island.Flash(enabled ? "Автозапуск включён" : "Автозапуск выключен");
+        }
+        finally { startupGate.Release(); }
     }
 
     private void PlaceWindows(bool force = false)
@@ -135,7 +177,7 @@ internal sealed class App : Application
     private void RefreshVisibility()
     {
         nint foreground = Native.GetForegroundWindow();
-        bool own = Native.BelongsToCurrentProcess(foreground);
+        bool own = Native.BelongsToCurrentProcess(foreground) && foreground != finder?.Handle;
         if (!own && foreground != 0) lastForeground = foreground;
         nint underlying = own ? lastForeground : foreground;
         bool onDesktop = Native.IsDesktop(underlying);

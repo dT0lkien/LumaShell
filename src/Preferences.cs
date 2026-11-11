@@ -11,6 +11,7 @@ internal sealed class Preferences
         "Luma Shell", "settings.json");
 
     public bool Chrome { get; set; } = true;
+    public bool AutoStart { get; set; } = true;
     public bool DockAlways { get; set; } = true;
     public bool StyleExplorerFrame { get; set; } = true;
     public bool HideWindowsTaskbar { get; set; } = true;

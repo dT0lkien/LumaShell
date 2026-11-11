@@ -35,6 +35,7 @@ internal sealed class Desktop
     private readonly TranslateTransform dockSlide = new();
     private readonly ScaleTransform glassWidth = new();
     private readonly Action openLauncher;
+    private readonly Action<string?> openFinder;
     private double? hoverX;
     private bool rendering;
     private bool targetsDirty;
@@ -47,16 +48,19 @@ internal sealed class Desktop
     private List<Native.OpenWindow> windows = [];
     private string[] dynamicPaths = [];
     private nint foreground;
+    private nint finderHandle;
 
     internal Window MenuBar { get; } = Overlay("Luma • Строка меню", 800, BarHeight);
     internal Window Launcher { get; } = Overlay("Luma • Dock", 1120, 145);
     internal bool Interacting => dock.IsMouseOver || Launcher.IsActive;
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
-        Action nativeTray, Action toggleTaskbar, Action update, Updates releases, Action openLauncher, Action toggleWin)
+        Action nativeTray, Action toggleTaskbar, Action update, Updates releases, Action openLauncher, Action toggleWin,
+        Action toggleStartup, Action<string?> openFinder)
     {
         this.settings = settings;
         this.openLauncher = openLauncher;
+        this.openFinder = openFinder;
         var menu = new DockPanel { Margin = new Thickness(12, 0, 15, 0) };
         trayIcons = new TrayIcons(exit);
         tray = new MenuTray(() => openIsland(IslandTab.Notifications), trayIcons.Show, update, releases);
@@ -70,6 +74,7 @@ internal sealed class Desktop
             Entry("Приложения Luma", openLauncher), Entry("Открыть остров", () => openIsland(IslandTab.Home)),
             Entry("Временно показать панель Windows", nativeTray),
             Entry(settings.WinLauncher ? "Вернуть меню Windows на Win" : "Открывать приложения Luma по Win", toggleWin),
+            Entry(settings.AutoStart ? "Выключить автозапуск Luma" : "Запускать Luma при входе", toggleStartup),
             Entry("Обновления Luma", update), Entry("Параметры Windows", () => Launch("ms-settings:")),
             new Separator(), Entry("Выйти из Luma", exit)
         ]));
@@ -77,7 +82,8 @@ internal sealed class Desktop
         left.Children.Add(Menu(activeApp, "Активное приложение", WindowEntries));
         left.Children.Add(Menu("Файл", () =>
         [
-            Entry("Проводник", () => Launch("explorer.exe")), Entry("Сделать снимок", capture),
+            Entry("Проводник", () => openFinder(null)), Entry("Проводник Windows", () => Launch("explorer.exe")),
+            Entry("Сделать снимок", capture),
             Entry("Папка снимков Luma", screenshotFolder)
         ]));
         left.Children.Add(Menu("Правка", () =>
@@ -220,7 +226,7 @@ internal sealed class Desktop
         foreground = active;
         windows = snapshot;
         RefreshExplorerFrame();
-        activeApp.Text = path is null ? "Проводник" : Installed(path).Label;
+        activeApp.Text = active != 0 && active == finderHandle ? "Luma Finder" : path is null ? "Проводник" : Installed(path).Label;
         var visible = windows.Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(path => !defaults.Any(pin => pin.Matches(path)) && !settings.Pins.Contains(path, StringComparer.OrdinalIgnoreCase))
             .Take(5).ToArray();
@@ -388,6 +394,11 @@ internal sealed class Desktop
 
     private bool OpenPin(Pin pin)
     {
+        if (OpensFinder(pin))
+        {
+            openFinder(pin.Arguments == "shell:Downloads" ? FinderFiles.Downloads : null);
+            return true;
+        }
         if (pin.Arguments != "shell:AppsFolder") return Launch(pin.Target, pin.Arguments);
         openLauncher();
         return true;
@@ -396,6 +407,12 @@ internal sealed class Desktop
     private bool Activate(Pin pin)
     {
         feedback.Text = "";
+        if (OpensFinder(pin))
+        {
+            bool newWindow = finderHandle == 0;
+            OpenPin(pin);
+            return newWindow;
+        }
         var matches = windows.Where(item => pin.Matches(item.Path)).ToArray();
         var match = matches.FirstOrDefault(item => item.Handle != foreground) ?? matches.FirstOrDefault();
         if (match is not null && Native.FocusWindow(match.Handle)) return false;
@@ -404,13 +421,23 @@ internal sealed class Desktop
         return opened;
     }
 
+    private static bool OpensFinder(Pin pin) => pin.Target == "explorer.exe" && pin.Arguments is "" or "shell:Downloads";
+
+    internal void SetFinderHandle(nint handle)
+    {
+        finderHandle = handle;
+        UpdateIndicators();
+    }
+
     private void UpdateIndicators()
     {
         foreach (var (pin, dot) in indicators)
         {
-            bool running = windows.Any(item => pin.Matches(item.Path));
+            bool finder = finderHandle != 0 && pin.Target == "explorer.exe" && pin.Arguments == "";
+            bool running = finder || windows.Any(item => pin.Matches(item.Path));
             dot.Visibility = running ? Visibility.Visible : Visibility.Hidden;
-            dot.Opacity = running && windows.Any(item => item.Handle == foreground && pin.Matches(item.Path)) ? 1 : 0.62;
+            bool active = finder && foreground == finderHandle || windows.Any(item => item.Handle == foreground && pin.Matches(item.Path));
+            dot.Opacity = active ? 1 : 0.62;
         }
     }
 

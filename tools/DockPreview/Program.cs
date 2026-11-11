@@ -42,8 +42,8 @@ internal static class Program
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
         string output = args.Length == 0 ? "Dock-Preview.png" : args[0];
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
-        using var file = File.Create(output);
-        encoder.Save(file);
+        using (var file = File.Create(output)) encoder.Save(file);
         Console.WriteLine("Rendered all eight Dock icons: " + output);
+        if (args.Length > 1) FinderPreview.VerifyAndRender(assembly, args[1]);
     }
 }

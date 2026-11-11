@@ -21,6 +21,7 @@ internal sealed class Taskbar : IDisposable
     private nint currentBar;
     private bool faulted;
     internal bool Active { get; private set; }
+    internal bool Faulted => faulted;
     internal bool Revealing => Active && DateTime.UtcNow < revealUntil;
     internal event Action? Failed;
 
@@ -69,10 +70,7 @@ internal sealed class Taskbar : IDisposable
             uint state = GetState();
             if ((state & 1) == 0) SetState(primary, state | 1);
         }
-        foreach (var window in Bars(primary))
-        {
-            if (IsWindowVisible(window)) ShowWindowAsync(window, 0);
-        }
+        HideBars(primary);
     }
 
     internal async void Reveal()
@@ -113,13 +111,32 @@ internal sealed class Taskbar : IDisposable
     {
         try
         {
+            if (parent is null || parent.HasExited) return;
             if (EventWaitHandle.TryOpenExisting(EventName(token), out var eventHandle))
             {
-                using (eventHandle) eventHandle.Set();
+                using (eventHandle)
+                {
+                    using var guard = new Mutex(false, LockName);
+                    try { guard.WaitOne(); }
+                    catch (AbandonedMutexException) { }
+                    try
+                    {
+                        var lease = JsonSerializer.Deserialize<Lease>(File.ReadAllText(LeasePath));
+                        if (lease?.Token != token || parent.HasExited) return;
+                        nint primary = FindWindow("Shell_TrayWnd", null);
+                        if (primary != 0)
+                        {
+                            SetState(primary, GetState() | 1);
+                            HideBars(primary);
+                        }
+                        eventHandle.Set();
+                    }
+                    finally { guard.ReleaseMutex(); }
+                }
             }
-            while (parent is not null && !parent.WaitForExit(2000) && File.Exists(LeasePath)) { }
+            while (!parent.WaitForExit(2000) && File.Exists(LeasePath)) { }
         }
-        catch (InvalidOperationException) { }
+        catch (Exception error) when (error is InvalidOperationException or IOException or UnauthorizedAccessException or JsonException) { }
         finally { Restore(token); }
     }
 
@@ -162,6 +179,12 @@ internal sealed class Taskbar : IDisposable
         yield return primary;
         nint window = 0;
         while ((window = FindWindowEx(0, window, "Shell_SecondaryTrayWnd", null)) != 0) yield return window;
+    }
+
+    private static void HideBars(nint primary)
+    {
+        foreach (var window in Bars(primary))
+            if (IsWindowVisible(window)) ShowWindowAsync(window, 0);
     }
 
     private static int Session() { using var process = Process.GetCurrentProcess(); return process.SessionId; }
