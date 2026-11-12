@@ -75,12 +75,12 @@ internal sealed partial class Island
         this.network = network;
         this.preferences = preferences;
         this.toggleShortcut = toggleShortcut;
-        shell = Surface(Gradient("#FF0B0B10", "#FF10101B"), 17);
+        shell = Surface(Gradient("#FF090A0C", "#FF111215"), 19);
         shell.Width = targetWidth;
         shell.Height = CompactHeight;
         shell.HorizontalAlignment = HorizontalAlignment.Center;
         shell.VerticalAlignment = VerticalAlignment.Top;
-        shell.BorderBrush = Line;
+        shell.BorderBrush = Paint("#31FFFFFF");
         shell.BorderThickness = new Thickness(1);
         shell.ClipToBounds = true;
         Window.Content = shell;
@@ -146,7 +146,7 @@ internal sealed partial class Island
             tabs[i].Margin = new Thickness(2);
             tabRow.Children.Add(tabs[i]);
         }
-        panel.Children.Add(Surface(Paint("#FF191923"), 11, tabRow));
+        panel.Children.Add(Surface(Paint("#FF1C1D21"), 13, tabRow));
         body.Margin = new Thickness(0, 9, 0, 0);
         Grid.SetRow(body, 1);
         panel.Children.Add(body);
@@ -250,7 +250,7 @@ internal sealed partial class Island
     {
         selected = tab;
         int index = (int)tab;
-        for (int i = 0; i < tabs.Length; i++) tabs[i].Background = i == index ? Chip : Brushes.Transparent;
+        for (int i = 0; i < tabs.Length; i++) tabs[i].Background = i == index ? Paint("#FF3D414A") : Brushes.Transparent;
         body.Content = views[index];
         if (tab == IslandTab.Screenshots) RefreshScreenshots();
         if (!expanded) return;

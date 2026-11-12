@@ -84,7 +84,8 @@ internal sealed class App : Application
         prism = new Prism(preferences);
         network = new PublicNetwork();
         updates = new Updates();
-        launcher = new Launcher(() => OpenFinder(null));
+        launcher = new Launcher(() => OpenFinder(null), RevealFinderItem,
+            app => desktop.IsPinned(app), app => desktop.TogglePin(app));
         shortcuts = new ShellShortcuts(Dispatcher, screenshots.Begin, ToggleLauncher, OpenDefaultFinder);
         if (!shortcuts.Configure(preferences.ReplaceSnip, preferences.WinLauncher, preferences.RouteFolders))
             preferences.ReplaceSnip = preferences.WinLauncher = false;
@@ -201,6 +202,20 @@ internal sealed class App : Application
 
     private void OpenFinder(string? path)
     {
+        var window = EnsureFinder();
+        window.OpenFolder(path);
+        desktop.SetFinderHandle(window.Handle);
+    }
+
+    private void RevealFinderItem(string path)
+    {
+        var window = EnsureFinder();
+        window.Reveal(path);
+        desktop.SetFinderHandle(window.Handle);
+    }
+
+    private FinderWindow EnsureFinder()
+    {
         if (finder is null)
         {
             finder = new FinderWindow();
@@ -210,8 +225,7 @@ internal sealed class App : Application
                 desktop.SetFinderHandle(0);
             };
         }
-        finder.OpenFolder(path);
-        desktop.SetFinderHandle(finder.Handle);
+        return finder;
     }
 
     private async void ConfigureStartup(bool interactive = false)

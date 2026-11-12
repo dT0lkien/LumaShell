@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -7,10 +9,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using static LumaShell.Visuals;
 
 namespace LumaShell;
@@ -18,33 +22,34 @@ namespace LumaShell;
 internal sealed class Launcher
 {
     private readonly Action openFinder;
-    private readonly Window window = Overlay("Luma • Приложения", 600, 470);
-    private readonly TextBox query = new() { FontSize = 19, Foreground = White, Background = Brushes.Transparent,
-        BorderThickness = new Thickness(0), CaretBrush = White, Padding = new Thickness(7, 7, 0, 7), MaxLength = 160 };
+    private readonly Action<string> reveal;
+    private readonly Func<AppEntry, bool> isPinned;
+    private readonly Func<AppEntry, string?> togglePin;
+    private readonly Window window = Overlay("Luma • Приложения", 620, 455);
+    private readonly TextBox query = new() { FontSize = 23, Foreground = White, Background = Brushes.Transparent,
+        BorderThickness = new Thickness(0), CaretBrush = White, Padding = new Thickness(7, 6, 7, 6), MaxLength = 160 };
     private readonly ListBox results = new() { Background = Brushes.Transparent, BorderThickness = new Thickness(0),
         Foreground = White, HorizontalContentAlignment = HorizontalAlignment.Stretch };
     private readonly TextBlock status = Text("Загружаем приложения…", 12, Muted);
-    private readonly TextBlock placeholder = Text("Поиск приложений", 18, Muted);
-    private CatalogItem[]? catalog;
+    private readonly TextBlock placeholder = Text("Поиск приложений", 22, Muted);
+    private readonly TextBlock section = Text("Приложения", 11, Muted, true);
+    private readonly List<string> recent = [];
+    private AppEntry[]? catalog;
+    private ContextMenu? context;
     private bool loading;
 
-    internal Launcher(Action openFinder)
+    internal Launcher(Action openFinder, Action<string> reveal, Func<AppEntry, bool> isPinned, Func<AppEntry, string?> togglePin)
     {
         this.openFinder = openFinder;
+        this.reveal = reveal;
+        this.isPinned = isPinned;
+        this.togglePin = togglePin;
         window.ShowActivated = true;
         results.ItemContainerStyle = ItemStyle();
+        ScrollViewer.SetHorizontalScrollBarVisibility(results, ScrollBarVisibility.Disabled);
         var layout = new DockPanel();
-        var heading = new DockPanel { Margin = new Thickness(4, 1, 4, 8) };
-        var title = Text("ПРИЛОЖЕНИЯ", 11, Blue, true);
-        title.Margin = new Thickness(3, 0, 0, 0);
-        var apps = Button("Все приложения Windows", () => { Close(); Desktop.Launch("explorer.exe", "shell:AppsFolder"); });
-        DockPanel.SetDock(apps, Dock.Right);
-        heading.Children.Add(apps);
-        heading.Children.Add(title);
-        DockPanel.SetDock(heading, Dock.Top);
-        layout.Children.Add(heading);
-        var search = new DockPanel { Margin = new Thickness(9, 0, 7, 0) };
-        var lens = Icon("M13,7 A6,6 0 1 1 1,7 A6,6 0 1 1 13,7 M11,11 L18,18", 16, Blue);
+        var search = new DockPanel { Margin = new Thickness(14, 4, 9, 4) };
+        var lens = Icon("M13,7 A6,6 0 1 1 1,7 A6,6 0 1 1 13,7 M11,11 L18,18", 20, Muted);
         DockPanel.SetDock(lens, Dock.Left);
         search.Children.Add(lens);
         var field = new Grid();
@@ -53,25 +58,44 @@ internal sealed class Launcher
         field.Children.Add(placeholder);
         field.Children.Add(query);
         search.Children.Add(field);
-        var searchCard = Surface(Paint("#FF2A2B38"), 11, search);
-        searchCard.Margin = new Thickness(2, 0, 2, 8);
+        var searchCard = new Border { Background = Paint("#2CFFFFFF"), BorderBrush = Line,
+            BorderThickness = new Thickness(0, 0, 0, 1), Child = search };
         DockPanel.SetDock(searchCard, Dock.Top);
         layout.Children.Add(searchCard);
-        status.Margin = new Thickness(7, 7, 7, 0);
+        section.Margin = new Thickness(16, 10, 0, 5);
+        DockPanel.SetDock(section, Dock.Top);
+        layout.Children.Add(section);
+        status.Margin = new Thickness(16, 8, 8, 10);
         DockPanel.SetDock(status, Dock.Bottom);
         layout.Children.Add(status);
+        results.Margin = new Thickness(7, 0, 7, 0);
         layout.Children.Add(results);
-        var panel = Surface(Gradient("#F5262836", "#FC15151E"), 23, layout);
+        var panel = Surface(Gradient("#F62D2F36", "#FB202126"), 24, layout);
         panel.BorderBrush = Paint("#68FFFFFF");
         panel.BorderThickness = new Thickness(1);
-        panel.Padding = new Thickness(15);
+        panel.Padding = new Thickness(2);
         window.Content = panel;
+        System.Windows.Automation.AutomationProperties.SetName(query, "Поиск приложений");
         FocusManager.SetFocusedElement(window, query);
         window.Activated += (_, _) => Keyboard.Focus(query);
-        window.Deactivated += (_, _) => Close();
+        window.Deactivated += (_, _) => window.Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(CloseIfUnfocused));
         window.PreviewKeyDown += (_, args) =>
         {
+            if (context?.IsOpen == true) return;
             if (args.Key == Key.Escape) { args.Handled = true; Close(); }
+            else if (args.Key == Key.Apps || (args.Key == Key.F10 || args.SystemKey == Key.F10) &&
+                Keyboard.Modifiers == ModifierKeys.Shift)
+            {
+                if (results.SelectedItem is not ListBoxItem row) return;
+                args.Handled = true;
+                OpenContext(row, PlacementMode.Bottom);
+            }
+            else if (args.Key == Key.R && Keyboard.Modifiers == ModifierKeys.Control &&
+                results.SelectedItem is ListBoxItem { Tag: AppEntry { Location: { } path } })
+            {
+                args.Handled = true;
+                Reveal(path);
+            }
             else if (args.Key == Key.Enter && (query.IsKeyboardFocusWithin || results.IsKeyboardFocusWithin))
             { args.Handled = true; LaunchSelected(); }
             else if (query.IsKeyboardFocusWithin && args.Key is Key.Up or Key.Down && results.Items.Count > 0)
@@ -85,9 +109,16 @@ internal sealed class Launcher
         results.PreviewMouseLeftButtonUp += (_, args) =>
         {
             if (args.OriginalSource is not DependencyObject source ||
-                ItemsControl.ContainerFromElement(results, source) is not ListBoxItem { Tag: CatalogItem item }) return;
+                ItemsControl.ContainerFromElement(results, source) is not ListBoxItem { Tag: AppEntry item }) return;
             args.Handled = true;
             Run(item);
+        };
+        results.PreviewMouseRightButtonUp += (_, args) =>
+        {
+            if (args.OriginalSource is not DependencyObject source ||
+                ItemsControl.ContainerFromElement(results, source) is not ListBoxItem row) return;
+            args.Handled = true;
+            OpenContext(row, PlacementMode.MousePoint);
         };
     }
 
@@ -102,7 +133,7 @@ internal sealed class Launcher
         var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
         hover.Setters.Add(new Setter(Border.BackgroundProperty, Chip, "Row"));
         var selected = new Trigger { Property = ListBoxItem.IsSelectedProperty, Value = true };
-        selected.Setters.Add(new Setter(Border.BackgroundProperty, Paint("#FF394460"), "Row"));
+        selected.Setters.Add(new Setter(Border.BackgroundProperty, Paint("#FF2858A5"), "Row"));
         template.Triggers.Add(hover);
         template.Triggers.Add(selected);
         var style = new Style(typeof(ListBoxItem));
@@ -113,8 +144,8 @@ internal sealed class Launcher
     internal void Toggle(Rect area)
     {
         if (window.IsVisible) { Close(); return; }
-        window.Width = Math.Min(600, area.Width - 20);
-        window.Height = Math.Min(470, area.Height - 20);
+        window.Width = Math.Max(120, Math.Min(620, area.Width - 20));
+        window.Height = Math.Max(140, Math.Min(455, area.Height - 20));
         window.Left = area.Left + (area.Width - window.Width) / 2;
         window.Top = area.Top + Math.Max(10, (area.Height - window.Height) * 0.24);
         window.Show();
@@ -126,12 +157,76 @@ internal sealed class Launcher
         if (catalog is null && !loading) Load();
     }
 
-    internal void Close() { if (window.IsVisible) window.Hide(); }
+    internal void Close()
+    {
+        if (context is { } menu) menu.IsOpen = false;
+        if (window.IsVisible) window.Hide();
+    }
+
+    private void CloseIfUnfocused()
+    {
+        if (!window.IsActive && context?.IsOpen != true) Close();
+    }
+
+    private void OpenContext(ListBoxItem row, PlacementMode placement)
+    {
+        if (row.Tag is not AppEntry app) return;
+        results.SelectedItem = row;
+        var menu = PopupMenu(row, placement);
+        context = menu;
+        menu.Items.Add(MenuEntry("Открыть", () => Run(app), "Enter"));
+        if (app.Location is { } location)
+        {
+            menu.Items.Add(MenuEntry("Показать в Finder", () => Reveal(location), "Ctrl+R"));
+            if (CanElevate(location)) menu.Items.Add(MenuEntry("Запуск от имени администратора", () => RunElevated(app, location)));
+        }
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MenuEntry(isPinned(app) ? "Открепить от Dock" : "Закрепить в Dock", () =>
+            status.Text = togglePin(app) ?? (isPinned(app) ? "Приложение закреплено" : "Приложение откреплено")));
+        menu.Items.Add(MenuEntry(app.Location is null ? "Копировать имя" : "Копировать путь", () =>
+        {
+            try { Clipboard.SetText(app.Location ?? app.Name); status.Text = "Скопировано"; }
+            catch (ExternalException) { status.Text = "Буфер обмена занят"; }
+        }));
+        menu.Closed += (_, _) =>
+        {
+            if (context != menu) return;
+            context = null;
+            window.Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+            {
+                if (window.IsActive && window.IsVisible) Keyboard.Focus(query);
+                else CloseIfUnfocused();
+            }));
+        };
+        menu.IsOpen = true;
+    }
+
+    private void Reveal(string path)
+    {
+        Close();
+        reveal(path);
+    }
+
+    private static bool CanElevate(string location) =>
+        Path.GetExtension(location).ToLowerInvariant() is ".exe" or ".lnk";
+
+    private void RunElevated(AppEntry app, string location)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo(location) { UseShellExecute = true, Verb = "runas" });
+            Remember(app);
+            Close();
+        }
+        catch (Win32Exception error) when (error.NativeErrorCode == 1223) { }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or ArgumentException)
+        { status.Text = "Windows не удалось запустить приложение"; }
+    }
 
     private async void Load()
     {
         loading = true;
-        var complete = new TaskCompletionSource<CatalogItem[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var complete = new TaskCompletionSource<AppEntry[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             try { complete.TrySetResult(ReadCatalog()); }
@@ -152,46 +247,73 @@ internal sealed class Launcher
         results.Items.Clear();
         if (catalog is null) return;
         var matches = catalog.Where(item => item.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase))
-            .OrderByDescending(item => item.Name.StartsWith(filter, StringComparison.CurrentCultureIgnoreCase)).Take(35).ToArray();
+            .OrderByDescending(item => item.Name.StartsWith(filter, StringComparison.CurrentCultureIgnoreCase))
+            .ThenBy(item => filter.Length == 0 && recent.IndexOf(item.Target) is var index && index >= 0 ? index : int.MaxValue)
+            .Take(35).ToArray();
+        section.Text = filter.Length == 0 && recent.Count > 0 ? "Недавние и другие приложения" : "Приложения";
         foreach (var app in matches)
         {
             var row = new DockPanel();
             var icon = app.Icon is null ? (FrameworkElement)Icon("M2,3 H18 V17 H2 Z M3,7 H17", 19, Blue)
-                : new Image { Source = app.Icon, Width = 24, Height = 24 };
+                : new Image { Source = app.Icon, Width = 28, Height = 28 };
             icon.Margin = new Thickness(0, 0, 12, 0);
             DockPanel.SetDock(icon, Dock.Left);
             row.Children.Add(icon);
             row.Children.Add(Text(app.Name, 14, bold: true));
-            results.Items.Add(new ListBoxItem { Content = row, Tag = app, Padding = new Thickness(9, 6, 9, 6),
-                Foreground = White, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+            var result = new ListBoxItem { Content = row, Tag = app, Padding = new Thickness(9, 5, 9, 5),
+                Foreground = White, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            System.Windows.Automation.AutomationProperties.SetName(result, app.Name);
+            results.Items.Add(result);
         }
         if (results.Items.Count > 0) results.SelectedIndex = 0;
-        status.Text = matches.Length > 0 ? "↑ ↓  Выбрать     Enter  Открыть     Esc  Закрыть" : "Приложения не найдены";
+        status.Text = matches.Length > 0 ? "↑ ↓  Выбрать     Enter  Открыть     Shift+F10  Действия" : "Приложения не найдены";
     }
 
     private void LaunchSelected()
     {
-        if (results.SelectedItem is ListBoxItem { Tag: CatalogItem item }) Run(item);
+        if (results.SelectedItem is ListBoxItem { Tag: AppEntry item }) Run(item);
     }
 
-    private void Run(CatalogItem item)
+    private void Run(AppEntry item)
     {
-        if (item.Target.Equals(@"shell:AppsFolder\Microsoft.Windows.Explorer", StringComparison.OrdinalIgnoreCase) ||
-            item.Target.Equals(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"), StringComparison.OrdinalIgnoreCase))
+        if (OpensFinder(item.Target))
         {
+            Remember(item);
             Close();
             openFinder();
             return;
         }
-        bool launched = item.Target.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)
-            ? Desktop.Launch("explorer.exe", $"\"{item.Target}\"") : Desktop.Launch(item.Target);
-        if (launched) Close();
+        if (LaunchTarget(item.Target))
+        {
+            Remember(item);
+            Close();
+        }
         else status.Text = "Windows не удалось открыть приложение";
     }
 
-    private static CatalogItem[] ReadCatalog()
+    private void Remember(AppEntry app)
     {
-        var list = new List<CatalogItem>();
+        recent.Remove(app.Target);
+        recent.Insert(0, app.Target);
+        if (recent.Count > 8) recent.RemoveAt(8);
+    }
+
+    internal static bool LaunchTarget(string target) => IsShellApp(target)
+        ? Desktop.Launch("explorer.exe", $"\"{target}\"") : Desktop.Launch(target);
+
+    internal static bool OpensFinder(string target) =>
+        target.Equals(@"shell:AppsFolder\Microsoft.Windows.Explorer", StringComparison.OrdinalIgnoreCase) ||
+        target.Equals(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"),
+            StringComparison.OrdinalIgnoreCase);
+
+    internal static bool IsShellApp(string target) =>
+        target.StartsWith(@"shell:AppsFolder\", StringComparison.OrdinalIgnoreCase) &&
+        target.Length > @"shell:AppsFolder\".Length && !target.Contains('"') && !target.Any(char.IsControl);
+
+    private static AppEntry[] ReadCatalog()
+    {
+        var list = new List<AppEntry>();
+        var shortcuts = StartMenuShortcuts();
         object? shell = null, folder = null, items = null;
         try
         {
@@ -212,7 +334,8 @@ internal sealed class Launcher
                         string path = ((dynamic)entry).Path;
                         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(path) || path.Contains('"')) continue;
                         string target = File.Exists(path) ? path : @"shell:AppsFolder\" + path;
-                        list.Add(new CatalogItem(Label(name, 90), target, ShellIcon(target)));
+                        string? location = File.Exists(path) ? path : AppLocation(entry) ?? shortcuts.GetValueOrDefault(name);
+                        list.Add(new AppEntry(Label(name, 90), target, location, ShellIcon(target)));
                     }
                     catch (Exception error) when (error is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { }
                     finally { Release(entry); }
@@ -222,30 +345,57 @@ internal sealed class Launcher
         catch (Exception error) when (error is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { }
         finally { Release(items); Release(folder); Release(shell); }
         if (list.Count == 0)
-        {
-            foreach (var location in new[] { Environment.SpecialFolder.Programs, Environment.SpecialFolder.CommonPrograms })
-            {
-                string path = Environment.GetFolderPath(location);
-                if (!Directory.Exists(path)) continue;
-                var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
-                foreach (string file in Directory.EnumerateFiles(path, "*.lnk", options).Take(250))
-                    list.Add(new CatalogItem(Path.GetFileNameWithoutExtension(file), file, ShellIcon(file)));
-            }
-        }
+            foreach (var (name, file) in shortcuts)
+                list.Add(new AppEntry(Label(name, 90), file, file, ShellIcon(file)));
         return list.DistinctBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
             .OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
     }
 
-    private static ImageSource? ShellIcon(string target)
+    private static Dictionary<string, string> StartMenuShortcuts()
     {
-        if (SHParseDisplayName(target, 0, out nint id, 0, out _) < 0 || id == 0) return null;
+        var shortcuts = new Dictionary<string, string>(StringComparer.CurrentCultureIgnoreCase);
+        var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+        foreach (var location in new[] { Environment.SpecialFolder.Programs, Environment.SpecialFolder.CommonPrograms })
+        {
+            string path = Environment.GetFolderPath(location);
+            if (!Directory.Exists(path)) continue;
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(path, "*.lnk", options).Take(250))
+                    shortcuts.TryAdd(Path.GetFileNameWithoutExtension(file), file);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+        return shortcuts;
+    }
+
+    private static string? AppLocation(object entry)
+    {
         try
         {
+            return ((dynamic)entry).ExtendedProperty("System.Link.TargetParsingPath") is string path && File.Exists(path) ? path : null;
+        }
+        catch (Exception error) when (error is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+        { return null; }
+    }
+
+    internal static ImageSource? ShellIcon(string target)
+    {
+        int apartment = CoInitializeEx(0, 0);
+        if (apartment < 0 && apartment != unchecked((int)0x80010106)) return null;
+        nint id = 0;
+        try
+        {
+            if (SHParseDisplayName(target, 0, out id, 0, out _) < 0 || id == 0) return null;
             if (SHGetFileInfo(id, 0, out var info, (uint)Marshal.SizeOf<ShellFileInfo>(), 0x109) == 0 || info.Icon == 0) return null;
             try { return IconImage(info.Icon); }
             finally { DestroyIcon(info.Icon); }
         }
-        finally { Marshal.FreeCoTaskMem(id); }
+        finally
+        {
+            if (id != 0) Marshal.FreeCoTaskMem(id);
+            if (apartment >= 0) CoUninitialize();
+        }
     }
 
     internal static ImageSource? IconImage(nint icon)
@@ -260,7 +410,7 @@ internal sealed class Launcher
     }
 
     private static void Release(object? value) { if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value); }
-    private sealed record CatalogItem(string Name, string Target, ImageSource? Icon);
+    internal sealed record AppEntry(string Name, string Target, string? Location, ImageSource? Icon);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct ShellFileInfo
@@ -277,4 +427,8 @@ internal sealed class Launcher
     private static extern nint SHGetFileInfo(nint id, uint attributes, out ShellFileInfo info, uint size, uint flags);
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(nint icon);
+    [DllImport("ole32.dll")]
+    private static extern int CoInitializeEx(nint reserved, uint apartment);
+    [DllImport("ole32.dll")]
+    private static extern void CoUninitialize();
 }

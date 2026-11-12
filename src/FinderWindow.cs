@@ -42,6 +42,7 @@ internal sealed class FinderWindow : Window
     };
     private readonly TextBlock heading = Text("Проводник", 19, bold: true);
     private readonly TextBlock status = Text("", 11, Secondary);
+    private readonly StackPanel pathBar = new() { Orientation = Orientation.Horizontal };
     private readonly TextBox search = Field("Поиск в папке");
     private readonly TextBox address = Field("Путь к папке");
     private readonly StackPanel places = new();
@@ -62,6 +63,7 @@ internal sealed class FinderWindow : Window
     private bool copying;
     private bool showingItemMenu;
     private bool closed;
+    private QuickLook? preview;
 
     internal FinderWindow()
     {
@@ -157,8 +159,15 @@ internal sealed class FinderWindow : Window
         toolbar.Children.Add(nameArea);
         DockPanel.SetDock(toolbar, Dock.Top);
         content.Children.Add(toolbar);
-        status.Margin = new Thickness(18, 0, 12, 0);
-        var footer = new Border { Height = 30, BorderBrush = Stroke, BorderThickness = new Thickness(0, 1, 0, 0), Child = status };
+        status.Margin = new Thickness(10, 0, 12, 0);
+        var footerContent = new DockPanel { Margin = new Thickness(7, 0, 0, 0) };
+        DockPanel.SetDock(status, Dock.Right);
+        footerContent.Children.Add(status);
+        var pathScroll = new ScrollViewer { Content = pathBar, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, CanContentScroll = false };
+        pathBar.SizeChanged += (_, _) => pathScroll.ScrollToRightEnd();
+        footerContent.Children.Add(pathScroll);
+        var footer = new Border { Height = 32, BorderBrush = Stroke, BorderThickness = new Thickness(0, 1, 0, 0), Child = footerContent };
         DockPanel.SetDock(footer, Dock.Bottom);
         content.Children.Add(footer);
         content.Children.Add(list);
@@ -223,15 +232,27 @@ internal sealed class FinderWindow : Window
 
     internal void OpenFolder(string? target)
     {
-        if (!IsVisible) Show();
-        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
-        Activate();
+        BringForward();
         if (target is not null) Navigate(target);
         else if (folder is null && load is null)
         {
             string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             Navigate(string.IsNullOrWhiteSpace(desktop) ? Home : desktop);
         }
+    }
+
+    internal void Reveal(string path)
+    {
+        if (Path.GetDirectoryName(path) is not { Length: > 0 } parent) return;
+        BringForward();
+        Navigate(parent, reveal: path);
+    }
+
+    private void BringForward()
+    {
+        if (!IsVisible) Show();
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Activate();
     }
 
     private static TextBox Field(string label)
@@ -435,7 +456,7 @@ internal sealed class FinderWindow : Window
         }
     }
 
-    private async void Navigate(string target, int? index = null, bool reload = false)
+    private async void Navigate(string target, int? index = null, bool reload = false, string? reveal = null)
     {
         string destination;
         try
@@ -445,7 +466,15 @@ internal sealed class FinderWindow : Window
         }
         catch (Exception error) when (error is ArgumentException or IOException or NotSupportedException)
         { status.Text = "Проверь путь к папке"; return; }
-        if (!reload && index is null && destination.Equals(folder, StringComparison.OrdinalIgnoreCase)) return;
+        if (!reload && index is null && destination.Equals(folder, StringComparison.OrdinalIgnoreCase))
+        {
+            if (reveal is not null)
+            {
+                load?.Cancel();
+                SelectPath(reveal);
+            }
+            return;
+        }
         if (reload && load is not null) return;
         load?.Cancel();
         var request = new CancellationTokenSource();
@@ -454,7 +483,7 @@ internal sealed class FinderWindow : Window
         try
         {
             var loaded = await Task.Run(() => FinderFiles.ReadFolder(destination, request.Token));
-            if (closed || load != request) return;
+            if (closed || load != request || request.IsCancellationRequested) return;
             var selectedPaths = reload ? SelectedPaths() : [];
             entries = loaded;
             if (!reload)
@@ -472,10 +501,12 @@ internal sealed class FinderWindow : Window
                 heading.ToolTip = destination;
                 Title = $"{heading.Text} • Luma Finder";
                 UpdateNavigation();
+                UpdatePathBar(destination);
                 WatchFolder(destination);
                 if (search.Text.Length != 0) search.Clear();
                 else RenderEntries();
-                if (list.Items.Count > 0) list.ScrollIntoView(list.Items[0]);
+                if (reveal is not null) SelectPath(reveal);
+                else if (list.Items.Count > 0) list.ScrollIntoView(list.Items[0]);
             }
             else
             {
@@ -496,6 +527,47 @@ internal sealed class FinderWindow : Window
             if (load == request) load = null;
             request.Dispose();
         }
+    }
+
+    private void SelectPath(string path)
+    {
+        if (search.Text.Length != 0) search.Clear();
+        if (list.Items.OfType<FinderEntry>().FirstOrDefault(item => item.Path.Equals(path, StringComparison.OrdinalIgnoreCase)) is not { } found)
+            return;
+        list.SelectedItem = found;
+        list.ScrollIntoView(found);
+        list.Focus();
+    }
+
+    private void UpdatePathBar(string destination)
+    {
+        var components = new Stack<string>();
+        for (string? current = destination; !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current))
+            components.Push(current);
+        pathBar.Children.Clear();
+        foreach (string path in components)
+        {
+            if (pathBar.Children.Count != 0)
+                pathBar.Children.Add(Icon("M7,4 L13,10 L7,16", 8, Secondary));
+            string name = Path.GetFileName(path);
+            var crumb = Button(Text(string.IsNullOrEmpty(name) ? path : name, 11, Secondary), path,
+                () => Navigate(path), Brushes.Transparent, 6);
+            crumb.MaxWidth = 160;
+            pathBar.Children.Add(crumb);
+        }
+    }
+
+    private void ToggleQuickLook()
+    {
+        if (preview is { IsVisible: true })
+        {
+            preview.Close();
+            return;
+        }
+        if (list.SelectedItem is not FinderEntry item) return;
+        preview = new QuickLook(this, item);
+        preview.Closed += (_, _) => preview = null;
+        preview.Show();
     }
 
     private void WatchFolder(string path)
@@ -605,6 +677,9 @@ internal sealed class FinderWindow : Window
         {
             switch (FinderShellMenu.Show(Handle, location, paths, paths.Length == 1 && selected.IsDirectory))
             {
+                case FinderShellMenu.Result.Preview:
+                    ToggleQuickLook();
+                    break;
                 case FinderShellMenu.Result.OpenFolder:
                     Navigate(selected.Path);
                     break;
@@ -628,6 +703,7 @@ internal sealed class FinderWindow : Window
     private void ShowFallbackMenu(FinderEntry selected, string[] paths)
     {
         var commands = new List<(string, Action)> { ("Открыть", OpenSelected) };
+        if (paths.Length == 1) commands.Add(("Быстрый просмотр", ToggleQuickLook));
         if (paths.Length == 1 && !selected.IsDirectory)
         {
             commands.Add(("Открыть с помощью…", () => RunVerb(selected.Path, "openas")));
@@ -764,6 +840,7 @@ internal sealed class FinderWindow : Window
             else GoHistory(args.SystemKey == Key.Left ? -1 : 1);
         }
         else if (args.Key == Key.F5) Reload();
+        else if (args.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.None && list.IsKeyboardFocusWithin) ToggleQuickLook();
         else if (list.IsKeyboardFocusWithin && (args.Key == Key.Apps || args.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift))
         {
             if (list.ItemContainerGenerator.ContainerFromItem(list.SelectedItem) is ListViewItem row && row.IsVisible)
@@ -777,13 +854,9 @@ internal sealed class FinderWindow : Window
 
     private static ContextMenu Menu((string Label, Action Action)[] commands)
     {
-        var menu = new ContextMenu { Background = ToolColor, Foreground = White, BorderBrush = Stroke, Padding = new Thickness(4) };
+        var menu = PopupMenu();
         foreach (var (label, action) in commands)
-        {
-            var entry = new MenuItem { Header = label, Foreground = White };
-            entry.Click += (_, _) => action();
-            menu.Items.Add(entry);
-        }
+            menu.Items.Add(MenuEntry(label, action));
         return menu;
     }
 

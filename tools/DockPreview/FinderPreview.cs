@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Linq;
+using Expression = System.Linq.Expressions.Expression;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -58,8 +60,20 @@ internal static class FinderPreview
             search.Clear();
 
             VerifyShellMenu(assembly, desktop, sandbox);
+            VerifyLauncherMenu(assembly, Path.Combine(sandbox, "Sample.exe"));
             VerifyHiddenWindow(assembly);
             VerifyFolderShortcut(assembly);
+
+            string plan = Path.Combine(projects, "План.txt");
+            type.GetMethod("Reveal", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, [plan]);
+            PumpUntil(() => list.SelectedItem is { } item && (string?)item.GetType().GetProperty("Path")!.GetValue(item) == plan,
+                "revealing a file from application search");
+            type.GetMethod("ToggleQuickLook", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+            var preview = application.Windows.OfType<Window>().Single(candidate => candidate.Owner == window);
+            PumpUntil(() => Find<TextBox>(preview, box => box.IsReadOnly && box.Text == "Luma") is not null, "rendering Quick Look");
+            preview.Close();
+            open.Invoke(window, [desktop]);
+            PumpUntil(() => list.Items.Count == files.Length + 2, "returning to the Finder preview folder");
 
             list.SelectedIndex = 0;
             window.UpdateLayout();
@@ -78,6 +92,47 @@ internal static class FinderPreview
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
         }
+    }
+
+    private static void VerifyLauncherMenu(Assembly assembly, string executable)
+    {
+        const BindingFlags internalInstance = BindingFlags.Instance | BindingFlags.NonPublic;
+        var type = assembly.GetType("LumaShell.Launcher", throwOnError: true)!;
+        var entryType = type.GetNestedType("AppEntry", BindingFlags.NonPublic)!;
+        var argument = Expression.Parameter(entryType);
+        var isPinned = Expression.Lambda(typeof(Func<,>).MakeGenericType(entryType, typeof(bool)),
+            Expression.Constant(false), argument).Compile();
+        var toggle = Expression.Lambda(typeof(Func<,>).MakeGenericType(entryType, typeof(string)),
+            Expression.Constant(null, typeof(string)), argument).Compile();
+        string? revealed = null;
+        var launcher = Activator.CreateInstance(type, internalInstance, null,
+            new object[] { (Action)(() => { }), (Action<string>)(path => revealed = path), isPinned, toggle }, null)!;
+        var entries = Array.CreateInstance(entryType, 1);
+        entries.SetValue(Activator.CreateInstance(entryType, internalInstance | BindingFlags.Public, null,
+            new object?[] { "Sample App", executable, executable, null }, null), 0);
+        type.GetField("catalog", internalInstance)!.SetValue(launcher, entries);
+        var window = (Window)type.GetField("window", internalInstance)!.GetValue(launcher)!;
+        try
+        {
+            type.GetMethod("Toggle", internalInstance)!.Invoke(launcher, [SystemParameters.WorkArea]);
+            var list = (ListBox)type.GetField("results", internalInstance)!.GetValue(launcher)!;
+            PumpUntil(() => list.Items.Count == 1 && ((ListBoxItem)list.Items[0]).ActualWidth > 0, "laying out the launcher result");
+            var row = (ListBoxItem)list.Items[0];
+            Point center = row.PointToScreen(new Point(row.ActualWidth / 2, row.ActualHeight / 2));
+            SetCursorPos((int)center.X, (int)center.Y);
+            mouse_event(0x0008, 0, 0, 0, 0);
+            mouse_event(0x0010, 0, 0, 0, 0);
+            var menuField = type.GetField("context", internalInstance)!;
+            PumpUntil(() => menuField.GetValue(launcher) is ContextMenu { IsOpen: true }, "opening the launcher menu with a right click");
+            var menu = (ContextMenu)menuField.GetValue(launcher)!;
+            if (!window.IsVisible || !menu.Items.OfType<MenuItem>().Any(item => Equals(item.Header, "Закрепить в Dock")))
+                throw new InvalidOperationException("The launcher lost its window or pin command during a right click.");
+            var show = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Показать в Finder"));
+            show.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            if (revealed != executable) throw new InvalidOperationException("The launcher did not reveal the clicked application.");
+            Console.WriteLine("A right click opened the launcher menu and its reveal command used the selected application.");
+        }
+        finally { window.Close(); }
     }
 
     private static void VerifyFolderShortcut(Assembly assembly)
@@ -161,6 +216,10 @@ internal static class FinderPreview
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(nint window, StringBuilder name, int capacity);
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint flags, uint x, uint y, uint data, nuint extra);
 
     private static void PumpUntil(Func<bool> finished, string description)
     {

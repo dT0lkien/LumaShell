@@ -4,6 +4,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -20,6 +21,8 @@ internal static class Visuals
     internal static readonly Brush Card = Paint("#FF1A1A23");
     internal static readonly Brush Chip = Paint("#22FFFFFF");
     private static readonly ControlTemplate ButtonTemplate = CreateButtonTemplate();
+    private static readonly ControlTemplate MenuTemplate = CreateMenuTemplate();
+    private static readonly ControlTemplate MenuItemTemplate = CreateMenuItemTemplate();
 
     internal static string Label(string value, int limit)
     {
@@ -157,6 +160,67 @@ internal static class Visuals
 
     internal static Button Button(string label, Action click, Brush? background = null) =>
         Button(Text(label, 12, bold: true), label, click, background);
+
+    internal static ContextMenu PopupMenu(UIElement? target = null, PlacementMode placement = PlacementMode.MousePoint) => new()
+    {
+        Template = MenuTemplate, Background = Gradient("#F62E3036", "#FA212328"), Foreground = White,
+        BorderBrush = Paint("#54FFFFFF"), BorderThickness = new Thickness(1), Padding = new Thickness(5),
+        PlacementTarget = target, Placement = placement
+    };
+
+    internal static MenuItem MenuEntry(string label, Action action, string gesture = "")
+    {
+        var item = new MenuItem
+        {
+            Header = label, InputGestureText = gesture, Template = MenuItemTemplate,
+            Foreground = White, Padding = new Thickness(10, 5, 10, 5), FontSize = 13
+        };
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    private static ControlTemplate CreateMenuTemplate()
+    {
+        var frame = new FrameworkElementFactory(typeof(Border));
+        frame.SetValue(Border.CornerRadiusProperty, new CornerRadius(11));
+        frame.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+        frame.SetValue(Border.BorderBrushProperty, new TemplateBindingExtension(Control.BorderBrushProperty));
+        frame.SetValue(Border.BorderThicknessProperty, new TemplateBindingExtension(Control.BorderThicknessProperty));
+        frame.SetValue(Border.PaddingProperty, new TemplateBindingExtension(Control.PaddingProperty));
+        var scroll = new FrameworkElementFactory(typeof(ScrollViewer));
+        scroll.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Auto);
+        scroll.SetValue(FrameworkElement.MaxHeightProperty, 500d);
+        scroll.AppendChild(new FrameworkElementFactory(typeof(ItemsPresenter)));
+        frame.AppendChild(scroll);
+        return new ControlTemplate(typeof(ContextMenu)) { VisualTree = frame };
+    }
+
+    private static ControlTemplate CreateMenuItemTemplate()
+    {
+        var frame = new FrameworkElementFactory(typeof(Border)) { Name = "MenuRow" };
+        frame.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+        frame.SetValue(Border.BackgroundProperty, Brushes.Transparent);
+        frame.SetValue(Border.PaddingProperty, new TemplateBindingExtension(Control.PaddingProperty));
+        var row = new FrameworkElementFactory(typeof(DockPanel));
+        var gesture = new FrameworkElementFactory(typeof(TextBlock));
+        gesture.SetValue(DockPanel.DockProperty, Dock.Right);
+        gesture.SetValue(TextBlock.TextProperty, new TemplateBindingExtension(MenuItem.InputGestureTextProperty));
+        gesture.SetValue(TextBlock.ForegroundProperty, Muted);
+        gesture.SetValue(FrameworkElement.MarginProperty, new Thickness(14, 0, 0, 0));
+        row.AppendChild(gesture);
+        var header = new FrameworkElementFactory(typeof(ContentPresenter));
+        header.SetValue(ContentPresenter.ContentSourceProperty, "Header");
+        row.AppendChild(header);
+        frame.AppendChild(row);
+        var template = new ControlTemplate(typeof(MenuItem)) { VisualTree = frame };
+        var selected = new Trigger { Property = MenuItem.IsHighlightedProperty, Value = true };
+        selected.Setters.Add(new Setter(Border.BackgroundProperty, Paint("#FF2858A5"), "MenuRow"));
+        template.Triggers.Add(selected);
+        var disabled = new Trigger { Property = UIElement.IsEnabledProperty, Value = false };
+        disabled.Setters.Add(new Setter(UIElement.OpacityProperty, 0.4, "MenuRow"));
+        template.Triggers.Add(disabled);
+        return template;
+    }
 
     internal static Path Icon(string geometry, double size, Brush? color = null) => new()
     {

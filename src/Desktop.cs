@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -20,7 +21,6 @@ internal sealed class Desktop
     internal const int BarHeight = 30;
     private const double IconSize = 56;
     private const double SlotSize = IconSize + 8;
-    private static readonly Brush Glass = Paint("#E9222329");
     private readonly TextBlock activeApp = Text("Проводник", 13, bold: true);
     private readonly TextBlock feedback = Text("", 12, Blue);
     private readonly StackPanel dockRow = new() { Orientation = Orientation.Horizontal };
@@ -35,6 +35,8 @@ internal sealed class Desktop
     private readonly List<DockSlot> slots = [];
     private readonly TranslateTransform dockSlide = new();
     private readonly ScaleTransform glassWidth = new();
+    private readonly Popup downloads = new() { Placement = PlacementMode.Top, StaysOpen = false, AllowsTransparency = true };
+    private CancellationTokenSource? loadingDownloads;
     private readonly Action openLauncher;
     private readonly Action<string?> openFinder;
     private double? hoverX;
@@ -52,8 +54,8 @@ internal sealed class Desktop
     private nint finderHandle;
 
     internal Window MenuBar { get; } = Overlay("Luma • Строка меню", 800, BarHeight);
-    internal Window Launcher { get; } = Overlay("Luma • Dock", 1120, 145);
-    internal bool Interacting => dock.IsMouseOver || Launcher.IsActive;
+    internal Window DockWindow { get; } = Overlay("Luma • Dock", 1120, 145);
+    internal bool Interacting => dock.IsMouseOver || DockWindow.IsActive || downloads.IsOpen;
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
         Action nativeTray, Action toggleTaskbar, Action update, Updates releases, Action openLauncher, Action toggleWin,
@@ -105,7 +107,7 @@ internal sealed class Desktop
         menu.Children.Add(left);
         MenuBar.Content = new Border
         {
-            Background = Gradient("#D91C1F27", "#BD2F323B"), BorderBrush = Paint("#30FFFFFF"),
+            Background = Gradient("#CD2C2E33", "#AC202126"), BorderBrush = Paint("#38FFFFFF"),
             BorderThickness = new Thickness(0, 0, 0, 1), Child = menu
         };
 
@@ -118,8 +120,8 @@ internal sealed class Desktop
             new("Терминал", "cmd.exe", "", ["WindowsTerminal.exe", "cmd.exe", "OpenConsole.exe"], "#FF454653", "#FF101118", "M2,4 L18,4 L18,16 L2,16 Z M5,7 L8,10 L5,13 M10,13 L14,13"),
             new("Параметры", "ms-settings:", "", ["SystemSettings.exe"], "#FF9CA5B4", "#FF4D5361", "M10,3 L10,17 M3,10 L17,10 M5,5 L15,15 M15,5 L5,15 M14,10 A4,4 0 1 1 6,10 A4,4 0 1 1 14,10")
         ];
-        var glass = Surface(Gradient("#787E8792", "#AD303841"), 22);
-        glass.BorderBrush = Paint("#65FFFFFF");
+        var glass = Surface(Gradient("#9D858991", "#AA393B43"), 23);
+        glass.BorderBrush = Paint("#6AFFFFFF");
         glass.BorderThickness = new Thickness(1);
         glass.RenderTransformOrigin = new Point(0.5, 0.5);
         glass.RenderTransform = glassWidth;
@@ -135,7 +137,13 @@ internal sealed class Desktop
         dock.MouseMove += (_, args) => MovePointer(args.GetPosition(dockRow).X);
         dock.MouseLeave += (_, _) => MovePointer(null);
         dockRow.SizeChanged += (_, _) => { if (hoverX is not null) targetsDirty = true; };
-        Launcher.IsVisibleChanged += (_, _) => { if (!Launcher.IsVisible) ResetIcons(); };
+        DockWindow.IsVisibleChanged += (_, _) =>
+        {
+            if (DockWindow.IsVisible) return;
+            downloads.IsOpen = false;
+            ResetIcons();
+        };
+        downloads.Closed += (_, _) => loadingDownloads?.Cancel();
         dock.AllowDrop = true;
         dock.DragOver += (_, args) =>
         {
@@ -153,21 +161,15 @@ internal sealed class Desktop
         feedback.VerticalAlignment = VerticalAlignment.Top;
         layout.Children.Add(feedback);
         layout.Children.Add(dock);
-        Launcher.Content = layout;
+        DockWindow.Content = layout;
         RebuildDock();
     }
 
-    private static MenuItem Entry(string label, Action action)
-    {
-        var item = new MenuItem { Header = label, Foreground = White, Padding = new Thickness(10, 4, 12, 4) };
-        item.Click += (_, _) => action();
-        return item;
-    }
+    private static MenuItem Entry(string label, Action action) => MenuEntry(label, action);
 
     private static ContextMenu Context(FrameworkElement target, IEnumerable<Control> entries, PlacementMode placement)
     {
-        var menu = new ContextMenu { Background = Glass, Foreground = White, BorderBrush = Line, Padding = new Thickness(4),
-            PlacementTarget = target, Placement = placement };
+        var menu = PopupMenu(target, placement);
         foreach (var entry in entries) menu.Items.Add(entry);
         return menu;
     }
@@ -200,14 +202,68 @@ internal sealed class Desktop
 
     private void AddPin(string path)
     {
-        if (settings.Pins.Contains(path, StringComparer.OrdinalIgnoreCase)) return;
-        if (settings.Pins.Count >= 6) { feedback.Text = "Можно закрепить до шести своих приложений"; return; }
-        settings.Pins.Add(path);
-        settings.Save();
+        if (PinnedTarget(path, path) is not null) return;
+        feedback.Text = AddPin(path, null) ?? "";
+    }
+
+    internal bool IsPinned(Launcher.AppEntry app) => PinnedTarget(app.Target, app.Location) is not null;
+
+    internal string? TogglePin(Launcher.AppEntry app)
+    {
+        if (PinnedTarget(app.Target, app.Location) is { } target) return RemovePin(target);
+        if (Launcher.OpensFinder(app.Target) || defaults.Any(pin => pin.Matches(app.Target) || app.Location is { } path && pin.Matches(path)))
+            return "Приложение уже есть в Dock";
+        return AddPin(app.Target, new DockPinDetails(app.Name, app.Location), app.Icon);
+    }
+
+    private string? PinnedTarget(string target, string? location) => settings.Pins.FirstOrDefault(pin =>
+        pin.Equals(target, StringComparison.OrdinalIgnoreCase) || location is not null &&
+        (pin.Equals(location, StringComparison.OrdinalIgnoreCase) || settings.PinDetails.TryGetValue(pin, out var details) &&
+            string.Equals(details?.Location, location, StringComparison.OrdinalIgnoreCase)));
+
+    private string? AddPin(string target, DockPinDetails? details, ImageSource? icon = null)
+    {
+        if (!CanPin(target)) return "Приложение больше недоступно";
+        if (settings.Pins.Count >= 6) return "В Dock можно закрепить до шести своих приложений";
+        settings.Pins.Add(target);
+        if (details is not null) settings.PinDetails[target] = details;
+        if (!settings.Save())
+        {
+            settings.Pins.Remove(target);
+            settings.PinDetails.Remove(target);
+            return "Не удалось сохранить Dock";
+        }
+        installed.Remove(target);
+        if (details is not null && icon is not null) installed[target] = CatalogPin(target, details, icon);
         RebuildDock();
+        return null;
+    }
+
+    private string? RemovePin(string target)
+    {
+        int index = settings.Pins.FindIndex(path => path.Equals(target, StringComparison.OrdinalIgnoreCase));
+        if (index < 0) return null;
+        string key = settings.Pins[index];
+        settings.Pins.RemoveAt(index);
+        settings.PinDetails.Remove(key, out var details);
+        if (!settings.Save())
+        {
+            settings.Pins.Insert(index, key);
+            if (details is not null) settings.PinDetails[key] = details;
+            return "Не удалось сохранить Dock";
+        }
+        installed.Remove(key);
+        RebuildDock();
+        return null;
     }
 
     private static bool IsExecutable(string path) => path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(path);
+    private static bool CanPin(string path) => Launcher.IsShellApp(path) || IsExecutable(path) ||
+        path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) && File.Exists(path);
+
+    private bool CustomPinMatches(string path) => settings.Pins.Any(pin =>
+        pin.Equals(path, StringComparison.OrdinalIgnoreCase) || settings.PinDetails.TryGetValue(pin, out var details) &&
+        string.Equals(details?.Location, path, StringComparison.OrdinalIgnoreCase));
 
     internal async void RefreshWindows(nint active)
     {
@@ -234,7 +290,7 @@ internal sealed class Desktop
         RefreshExplorerFrame();
         activeApp.Text = active != 0 && active == finderHandle ? "Luma Finder" : path is null ? "Проводник" : Installed(path).Label;
         var visible = windows.Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(path => !defaults.Any(pin => pin.Matches(path)) && !settings.Pins.Contains(path, StringComparer.OrdinalIgnoreCase))
+            .Where(path => !defaults.Any(pin => pin.Matches(path)) && !CustomPinMatches(path))
             .Take(5).ToArray();
         // Keep the order of open apps stable when their Z order changes.
         var ordered = dynamicPaths.Where(path => visible.Contains(path, StringComparer.OrdinalIgnoreCase))
@@ -275,11 +331,11 @@ internal sealed class Desktop
         dockRow.Children.Clear();
         indicators.Clear();
         foreach (var pin in defaults) dockRow.Children.Add(Tile(pin));
-        foreach (var path in settings.Pins.Where(IsExecutable)) dockRow.Children.Add(Tile(Installed(path), custom: true));
-        if (dynamicPaths.Any(path => !settings.Pins.Contains(path, StringComparer.OrdinalIgnoreCase)))
+        foreach (var path in settings.Pins.Where(CanPin)) dockRow.Children.Add(Tile(Installed(path), custom: true));
+        if (dynamicPaths.Any(path => !CustomPinMatches(path)))
         {
             AddSeparator();
-            foreach (var path in dynamicPaths.Where(path => !settings.Pins.Contains(path, StringComparer.OrdinalIgnoreCase)))
+            foreach (var path in dynamicPaths.Where(path => !CustomPinMatches(path)))
                 dockRow.Children.Add(Tile(Installed(path), custom: true));
         }
         AddSeparator();
@@ -296,6 +352,13 @@ internal sealed class Desktop
     private Pin Installed(string path)
     {
         if (installed.TryGetValue(path, out var pin)) return pin;
+        if (settings.PinDetails.TryGetValue(path, out var details) && details is not null)
+        {
+            pin = CatalogPin(path, details);
+            installed[path] = pin;
+            LoadIcon(path);
+            return pin;
+        }
         string name = Path.GetFileNameWithoutExtension(path);
         try
         {
@@ -311,11 +374,15 @@ internal sealed class Desktop
 
     private async void LoadIcon(string path)
     {
-        var image = await Task.Run(() => DockArt.Extract(path));
+        var image = await Task.Run(() => IsExecutable(path) ? DockArt.Extract(path) : Launcher.ShellIcon(path));
         if (image is null || !installed.TryGetValue(path, out var pin)) return;
         installed[path] = pin with { Image = image };
         dockDirty = true;
     }
+
+    private static Pin CatalogPin(string target, DockPinDetails details, ImageSource? image = null) =>
+        new(Label(details.Name ?? target, 55), target, "", [], "#FF7482A4", "#FF33415F",
+            "M3,4 H17 V16 H3 Z M3,8 H17", image, details.Location);
 
     private FrameworkElement Tile(Pin pin, bool custom = false)
     {
@@ -326,8 +393,8 @@ internal sealed class Desktop
         var tile = Surface(artwork is null ? Gradient(pin.Light, pin.Dark) : Brushes.Transparent, 13, icon);
         tile.Width = tile.Height = IconSize;
         RenderOptions.SetBitmapScalingMode(tile, BitmapScalingMode.HighQuality);
-        var dot = Surface(White, 2);
-        dot.Width = dot.Height = 4;
+        var dot = Surface(White, 2.5);
+        dot.Width = dot.Height = 5;
         dot.Margin = new Thickness(0, 4, 0, 0);
         dot.Visibility = Visibility.Hidden;
         indicators.Add((pin, dot));
@@ -335,8 +402,14 @@ internal sealed class Desktop
         column.Children.Add(tile);
         column.Children.Add(dot);
         var bounce = new TranslateTransform();
-        var button = Button(column, pin.Label, async () =>
+        Button? button = null;
+        button = Button(column, pin.Label, async () =>
         {
+            if (pin.Arguments == "shell:Downloads")
+            {
+                ShowDownloads(button!);
+                return;
+            }
             if (!await Activate(pin) || !animate) return;
             var jump = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(540), FillBehavior = FillBehavior.Stop };
             jump.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(0)));
@@ -370,25 +443,89 @@ internal sealed class Desktop
         {
             var entries = windows.Where(item => pin.Matches(item.Path)).Take(8)
                 .Select(item => (Control)Entry(Label(item.Title, 58), async () => await Activate(pin, item))).ToList();
-            entries.Add(Entry("Открыть", async () => await Activate(pin)));
+            entries.Add(pin.Arguments == "shell:Downloads" ? Entry("Открыть в Finder", () => OpenPin(pin))
+                : Entry("Открыть", async () => await Activate(pin)));
             if (custom)
             {
                 bool pinned = settings.Pins.Contains(pin.Target, StringComparer.OrdinalIgnoreCase);
                 entries.Add(Entry(pinned ? "Открепить" : "Закрепить в Dock", () =>
                 {
                     if (!pinned) AddPin(pin.Target);
-                    else
-                    {
-                        settings.Pins.RemoveAll(path => path.Equals(pin.Target, StringComparison.OrdinalIgnoreCase));
-                        settings.Save();
-                        RebuildDock();
-                    }
+                    else feedback.Text = RemovePin(pin.Target) ?? "";
                 }));
             }
             Context(button, entries, PlacementMode.Top).IsOpen = true;
             args.Handled = true;
         };
         return Slot(button, scale, lift);
+    }
+
+    private async void ShowDownloads(Button anchor)
+    {
+        if (downloads.IsOpen)
+        {
+            downloads.IsOpen = false;
+            return;
+        }
+        const double width = 298;
+        var rows = new StackPanel();
+        var pending = Text("Читаем папку…", 12, Muted);
+        pending.Margin = new Thickness(6, 5, 0, 6);
+        rows.Children.Add(pending);
+        var panel = new StackPanel { Width = width };
+        var title = Text("Загрузки", 16, bold: true);
+        title.Margin = new Thickness(5, 0, 0, 8);
+        panel.Children.Add(title);
+        panel.Children.Add(new ScrollViewer { Content = rows, MaxHeight = 320, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        string folder = FinderFiles.Downloads;
+        var open = Button("Открыть в Finder", () => { downloads.IsOpen = false; openFinder(folder); });
+        open.HorizontalContentAlignment = HorizontalAlignment.Left;
+        open.Margin = new Thickness(0, 7, 0, 0);
+        panel.Children.Add(open);
+        var frame = Surface(Gradient("#F435373E", "#FC212328"), 18, panel);
+        frame.Padding = new Thickness(11);
+        frame.BorderBrush = Paint("#60FFFFFF");
+        frame.BorderThickness = new Thickness(1);
+        downloads.Child = frame;
+        downloads.PlacementTarget = anchor;
+        downloads.HorizontalOffset = (anchor.ActualWidth - width - 24) / 2;
+        downloads.VerticalOffset = -7;
+        downloads.IsOpen = true;
+        Entrance(frame, 6);
+        var request = new CancellationTokenSource();
+        loadingDownloads = request;
+        try
+        {
+            var files = await Task.Run(() => FinderFiles.ReadFolder(folder, request.Token)
+                .OrderByDescending(file => file.Modified).Take(7).ToArray());
+            if (request.IsCancellationRequested || loadingDownloads != request) return;
+            rows.Children.Clear();
+            if (files.Length == 0) rows.Children.Add(Text("Папка пуста", 12, Muted));
+            foreach (var file in files)
+            {
+                var row = new DockPanel();
+                var image = new Image { Source = file.Icon, Width = 23, Height = 23, Margin = new Thickness(0, 0, 9, 0) };
+                DockPanel.SetDock(image, Dock.Left);
+                row.Children.Add(image);
+                row.Children.Add(Text(file.Name, 12));
+                var entry = Button(row, file.Name, () =>
+                {
+                    downloads.IsOpen = false;
+                    if (file.IsDirectory) openFinder(file.Path);
+                    else if (!Launch(file.Path)) feedback.Text = "Не удалось открыть загрузку";
+                }, Brushes.Transparent);
+                entry.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+                rows.Children.Add(entry);
+            }
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+        { if (loadingDownloads == request) pending.Text = "Папка недоступна"; }
+        finally
+        {
+            if (loadingDownloads == request) loadingDownloads = null;
+            request.Dispose();
+        }
     }
 
     private Grid Slot(FrameworkElement element, ScaleTransform? scale = null, TranslateTransform? lift = null)
@@ -408,6 +545,7 @@ internal sealed class Desktop
             openFinder(pin.Arguments == "shell:Downloads" ? FinderFiles.Downloads : null);
             return true;
         }
+        if (Launcher.IsShellApp(pin.Target)) return Launcher.LaunchTarget(pin.Target);
         if (pin.Arguments != "shell:AppsFolder") return Launch(pin.Target, pin.Arguments);
         openLauncher();
         return true;
@@ -428,8 +566,9 @@ internal sealed class Desktop
 
             var matches = windows.Where(item => pin.Matches(item.Path) && Native.WindowMatches(item)).ToArray();
             var match = selected ?? matches.FirstOrDefault();
-            if (Prism.IsTrayClient(pin.Target) &&
-                await Prism.OpenRunning(pin.Target, match?.Handle ?? 0) is { } prismOpened)
+            string executable = pin.Location ?? pin.Target;
+            if (Prism.IsTrayClient(executable) &&
+                await Prism.OpenRunning(executable, match?.Handle ?? 0) is { } prismOpened)
             {
                 if (!prismOpened) feedback.Text = "Windows не удалось вывести окно Prism";
                 return false;
@@ -554,7 +693,8 @@ internal sealed class Desktop
 
     internal void SetDockVisible(bool visible, bool immediate)
     {
-        bool wasVisible = Launcher.IsVisible;
+        if (immediate && !visible) downloads.IsOpen = false;
+        bool wasVisible = DockWindow.IsVisible;
         if (dockVisible == visible && !(immediate && !visible && wasVisible)) return;
         dockVisible = visible;
         double y = wasVisible ? dockSlide.Y : 13;
@@ -563,17 +703,17 @@ internal sealed class Desktop
         dock.BeginAnimation(UIElement.OpacityProperty, null);
         dockSlide.Y = visible ? 0 : 13;
         dock.Opacity = visible ? 1 : 0;
-        if (visible && !wasVisible) Launcher.Show();
+        if (visible && !wasVisible) DockWindow.Show();
         if (!animate || immediate)
         {
-            if (!visible && Launcher.IsVisible) Launcher.Hide();
+            if (!visible && DockWindow.IsVisible) DockWindow.Hide();
             return;
         }
         var duration = TimeSpan.FromMilliseconds(visible ? 240 : 165);
         dockSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(y, dockSlide.Y, duration)
             { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop });
         var fade = new DoubleAnimation(opacity, dock.Opacity, duration) { FillBehavior = FillBehavior.Stop };
-        if (!visible) fade.Completed += (_, _) => { if (!dockVisible && Launcher.IsVisible) Launcher.Hide(); };
+        if (!visible) fade.Completed += (_, _) => { if (!dockVisible && DockWindow.IsVisible) DockWindow.Hide(); };
         dock.BeginAnimation(UIElement.OpacityProperty, fade);
     }
 
@@ -596,23 +736,24 @@ internal sealed class Desktop
 
     internal void PlaceDock(Rect area)
     {
-        Launcher.Width = Math.Min(1120, area.Width);
-        Launcher.Left = area.Left + (area.Width - Launcher.Width) / 2;
-        Launcher.Top = area.Bottom - Launcher.Height - 5;
+        DockWindow.Width = Math.Min(1120, area.Width);
+        DockWindow.Left = area.Left + (area.Width - DockWindow.Width) / 2;
+        DockWindow.Top = area.Bottom - DockWindow.Height - 5;
         ResizeDock();
     }
 
     private void ResizeDock()
     {
         double desired = indicators.Count * SlotSize + (dynamicPaths.Length > 0 ? 34 : 17) + 18;
-        double scale = Math.Clamp((Launcher.Width - 12) / (desired + 82), 0.1, 1);
+        double scale = Math.Clamp((DockWindow.Width - 12) / (desired + 82), 0.1, 1);
         dock.LayoutTransform = scale < 1 ? new ScaleTransform(scale, scale) : Transform.Identity;
     }
 
     private sealed record Pin(string Label, string Target, string Arguments, string[] Processes,
-        string Light, string Dark, string Glyph, ImageSource? Image = null)
+        string Light, string Dark, string Glyph, ImageSource? Image = null, string? Location = null)
     {
         internal bool Matches(string path) => string.Equals(Target, path, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(Location, path, StringComparison.OrdinalIgnoreCase) ||
             Processes.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase);
     }
 

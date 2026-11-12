@@ -14,9 +14,10 @@ internal static class FinderShellMenu
     private const uint LastShellCommand = 0x6FFF;
     private const uint CopyPathCommand = 0x7000;
     private const uint OpenFolderCommand = 0x7001;
+    private const uint PreviewCommand = 0x7002;
     private static readonly Guid UiObject = new("3981E225-F559-11D3-8E3A-00C04F6837D5");
 
-    internal enum Result { Unavailable, Cancelled, Invoked, Failed, CopyPath, OpenFolder }
+    internal enum Result { Unavailable, Cancelled, Invoked, Failed, CopyPath, OpenFolder, Preview }
 
     internal static Result Show(nint owner, Point location, string[] paths, bool canOpenFolder)
     {
@@ -28,6 +29,7 @@ internal static class FinderShellMenu
 
         if (canOpenFolder) InsertMenu(prepared.Handle, 0, 0x400, OpenFolderCommand, "Открыть в Luma Finder");
         AppendMenu(prepared.Handle, 0x800, 0, null);
+        if (paths.Length == 1) AppendMenu(prepared.Handle, 0, PreviewCommand, "Быстрый просмотр");
         AppendMenu(prepared.Handle, 0, CopyPathCommand, "Копировать путь");
         uint command;
         var menu3 = prepared.Context as IContextMenu3;
@@ -42,6 +44,7 @@ internal static class FinderShellMenu
         if (command == 0) return Result.Cancelled;
         if (command == CopyPathCommand) return Result.CopyPath;
         if (command == OpenFolderCommand) return Result.OpenFolder;
+        if (command == PreviewCommand) return Result.Preview;
         if (command < FirstShellCommand || command > LastShellCommand) return Result.Failed;
         return Invoke(prepared.Context, owner, command - FirstShellCommand, location, paths[0], modifiers)
             ? Result.Invoked : Result.Failed;

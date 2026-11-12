@@ -23,6 +23,7 @@ internal sealed class Preferences
     public string? PrismProfile { get; set; }
     public string? ScreenshotFolder { get; set; }
     public List<string> Pins { get; set; } = [];
+    public Dictionary<string, DockPinDetails> PinDetails { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     internal static Preferences Load()
     {
@@ -31,6 +32,7 @@ internal sealed class Preferences
             var preferences = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(FilePath)) ?? new();
             preferences.Pins ??= [];
             preferences.Pins.RemoveAll(path => string.IsNullOrWhiteSpace(path));
+            preferences.PinDetails ??= new(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(preferences.ScreenshotFolder)) preferences.ScreenshotFolder = null;
             return preferences;
         }
@@ -50,3 +52,5 @@ internal sealed class Preferences
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return false; }
     }
 }
+
+internal sealed record DockPinDetails(string Name, string? Location);

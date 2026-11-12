@@ -24,15 +24,15 @@ internal static class Program
         using (var context = visual.RenderOpen())
         {
             context.DrawRectangle(new LinearGradientBrush(Color.FromRgb(24, 80, 64), Color.FromRgb(16, 35, 53), 90), null, new Rect(0, 0, 584, 124));
-            context.DrawRoundedRectangle(new LinearGradientBrush(Color.FromArgb(120, 126, 135, 146), Color.FromArgb(173, 48, 56, 65), 45),
-                new Pen(new SolidColorBrush(Color.FromArgb(101, 255, 255, 255)), 1), new Rect(14, 23, 556, 84), 22, 22);
+            context.DrawRoundedRectangle(new LinearGradientBrush(Color.FromArgb(157, 133, 137, 145), Color.FromArgb(170, 57, 59, 67), 45),
+                new Pen(new SolidColorBrush(Color.FromArgb(106, 255, 255, 255)), 1), new Rect(14, 23, 556, 84), 23, 23);
             for (int index = 0; index < items.Length; index++)
             {
                 var image = builtin.Invoke(null, [items[index].Target, items[index].Arguments]) as ImageSource
                     ?? throw new InvalidOperationException("Missing artwork for " + items[index]);
                 if (!image.IsFrozen || image.Width != 64 || image.Height != 64) throw new InvalidOperationException("Invalid icon canvas");
                 context.DrawImage(image, new Rect(25 + index * 66, 31, 56, 56));
-                if (index < 6) context.DrawEllipse(Brushes.White, null, new Point(53 + index * 66, 96), 2, 2);
+                if (index < 6) context.DrawEllipse(Brushes.White, null, new Point(53 + index * 66, 96), 2.5, 2.5);
             }
             context.DrawLine(new Pen(new SolidColorBrush(Color.FromArgb(96, 255, 255, 255)), 1), new Point(415, 47), new Point(415, 82));
         }
