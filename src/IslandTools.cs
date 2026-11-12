@@ -34,7 +34,7 @@ internal sealed partial class Island
         DockPanel.SetDock(networkCard, Dock.Top);
         layout.Children.Add(networkCard);
         var row = new DockPanel { Margin = new Thickness(2, 7, 2, 0) };
-        var prismActions = Row(Button("Открыть", () => Prism.Open()),
+        var prismActions = Row(Button("Открыть", prism.Open),
             Button(prismToggleLabel, "Включить или выключить чтение статуса Prism", prism.Toggle),
             Button(Text("⚙", 13, bold: true), "Указать папку профиля Prism", prism.ChooseProfile, Chip, 6));
         DockPanel.SetDock(prismActions, Dock.Right);
@@ -47,7 +47,7 @@ internal sealed partial class Island
         {
             if (prism.ChangingZapret || prism.ZapretStatus == Zapret.Mode.Pending) return;
             if (prism.ZapretStatus is Zapret.Mode.On or Zapret.Mode.Off) prism.ToggleZapret();
-            else Prism.Open();
+            else prism.Open();
         }, Chip, 7);
         DockPanel.SetDock(action, Dock.Right);
         zapret.Children.Add(action);

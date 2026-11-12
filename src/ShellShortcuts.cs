@@ -8,6 +8,7 @@ namespace LumaShell;
 
 internal sealed class ShellShortcuts : IDisposable
 {
+    internal const nuint ReplayMarker = 0x4C554D41;
     private delegate nint Callback(int code, nint message, nint data);
     private readonly Dispatcher ui;
     private readonly Dispatcher pump;
@@ -60,7 +61,8 @@ internal sealed class ShellShortcuts : IDisposable
 
     private nint OnKey(int code, nint message, nint data)
     {
-        if (code != 0 || (Marshal.ReadInt32(data, 8) & 0x10) != 0) return Next(code, message, data);
+        if (code != 0 || unchecked((nuint)Marshal.ReadIntPtr(data, 16)) == ReplayMarker)
+            return Next(code, message, data);
         int key = Marshal.ReadInt32(data);
         bool down = message is 0x100 or 0x104;
         bool up = message is 0x101 or 0x105;
@@ -68,7 +70,8 @@ internal sealed class ShellShortcuts : IDisposable
         bool win = key is 0x5B or 0x5C;
         bool modified = win && down && (Down(0x10) || Down(0x11) || Down(0x12) || Down(key == 0x5B ? 0x5C : 0x5B));
         bool intercept = Launcher && LauncherAvailable;
-        switch (tap.Handle(key, down, intercept, modified, Finder && FinderAvailable))
+        bool snipChord = key == 0x53 && Snip && Down(0x10) && !Down(0x11) && !Down(0x12);
+        switch (tap.Handle(key, down, intercept, modified, Finder && FinderAvailable, snipChord))
         {
             case WinTap.Action.Hold:
                 heldWin = Keyboard(data, key, false);
@@ -81,6 +84,9 @@ internal sealed class ShellShortcuts : IDisposable
             case WinTap.Action.OpenFolder:
                 if (!FinderHotkeyRegistered || !SendActivationHotkey(Native.FinderActivationKey))
                     ui.BeginInvoke(DispatcherPriority.Input, openFinder);
+                return 1;
+            case WinTap.Action.Capture:
+                ui.BeginInvoke(DispatcherPriority.Input, capture);
                 return 1;
             case WinTap.Action.Suppress:
                 return 1;
@@ -96,7 +102,7 @@ internal sealed class ShellShortcuts : IDisposable
         if (key == 0x53)
         {
             if (up && suppressS) { suppressS = false; return 1; }
-            if (down && (suppressS || Snip && (Down(0x5B) || Down(0x5C)) && Down(0x10) && !Down(0x11) && !Down(0x12)))
+            if (down && (suppressS || snipChord && (Down(0x5B) || Down(0x5C))))
             {
                 if (!suppressS) ui.BeginInvoke(DispatcherPriority.Normal, capture);
                 suppressS = true;
@@ -110,7 +116,7 @@ internal sealed class ShellShortcuts : IDisposable
 
     private static bool SendActivationHotkey(ushort key)
     {
-        var down = new Input { Type = 1, Data = new() { Key = new() { Key = key } } };
+        var down = new Input { Type = 1, Data = new() { Key = new() { Key = key, Extra = ReplayMarker } } };
         var up = down;
         up.Data.Key.Flags = 2;
         int size = Marshal.SizeOf<Input>();
@@ -128,7 +134,8 @@ internal sealed class ShellShortcuts : IDisposable
             {
                 Key = (ushort)key,
                 Scan = (ushort)Marshal.ReadInt32(data, 4),
-                Flags = ((uint)Marshal.ReadInt32(data, 8) & 1) | (up ? 2u : 0u)
+                Flags = ((uint)Marshal.ReadInt32(data, 8) & 1) | (up ? 2u : 0u),
+                Extra = ReplayMarker
             }
         }
     };

@@ -26,6 +26,7 @@ internal sealed class Desktop
     private readonly StackPanel dockRow = new() { Orientation = Orientation.Horizontal };
     private readonly Border dock;
     private readonly List<(Pin Pin, Border Dot)> indicators = [];
+    private readonly HashSet<string> activatingPins = new(StringComparer.OrdinalIgnoreCase);
     private readonly Preferences settings;
     private readonly bool animate = SystemParameters.ClientAreaAnimation;
     private readonly MenuTray tray;
@@ -181,7 +182,7 @@ internal sealed class Desktop
     {
         foreach (var window in Native.OpenWindows().Take(16))
         {
-            var item = Entry(Label(window.Title, 60), () => Native.FocusWindow(window.Handle));
+            var item = Entry(Label(window.Title, 60), async () => await Native.FocusWindow(window.Handle));
             if (window.Handle == foreground) item.FontWeight = FontWeights.Bold;
             yield return item;
         }
@@ -331,9 +332,9 @@ internal sealed class Desktop
         column.Children.Add(tile);
         column.Children.Add(dot);
         var bounce = new TranslateTransform();
-        var button = Button(column, pin.Label, () =>
+        var button = Button(column, pin.Label, async () =>
         {
-            if (!Activate(pin) || !animate) return;
+            if (!await Activate(pin) || !animate) return;
             var jump = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(540), FillBehavior = FillBehavior.Stop };
             jump.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(0)));
             jump.KeyFrames.Add(new EasingDoubleKeyFrame(-18, KeyTime.FromPercent(0.34), new QuadraticEase { EasingMode = EasingMode.EaseOut }));
@@ -343,9 +344,12 @@ internal sealed class Desktop
             bounce.BeginAnimation(TranslateTransform.YProperty, jump);
         }, Brushes.Transparent, 4);
         button.Width = SlotSize;
-        var plainButton = new FrameworkElementFactory(typeof(ContentPresenter));
-        plainButton.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-        plainButton.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+        var plainButton = new FrameworkElementFactory(typeof(Border));
+        plainButton.SetValue(Border.BackgroundProperty, Brushes.Transparent);
+        var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+        presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        presenter.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+        plainButton.AppendChild(presenter);
         button.Template = new ControlTemplate(typeof(Button)) { VisualTree = plainButton };
         button.ToolTip = new ToolTip { Content = pin.Label, Placement = PlacementMode.Top, VerticalOffset = -25,
             Background = Paint("#EC30343C"), Foreground = White, BorderBrush = Paint("#45FFFFFF"),
@@ -362,8 +366,8 @@ internal sealed class Desktop
         button.PreviewMouseRightButtonUp += (_, args) =>
         {
             var entries = windows.Where(item => pin.Matches(item.Path)).Take(8)
-                .Select(item => (Control)Entry(Label(item.Title, 58), () => Native.FocusWindow(item.Handle))).ToList();
-            entries.Add(Entry("Открыть", () => OpenPin(pin)));
+                .Select(item => (Control)Entry(Label(item.Title, 58), async () => await Activate(pin, item))).ToList();
+            entries.Add(Entry("Открыть", async () => await Activate(pin)));
             if (custom)
             {
                 bool pinned = settings.Pins.Contains(pin.Target, StringComparer.OrdinalIgnoreCase);
@@ -406,21 +410,38 @@ internal sealed class Desktop
         return true;
     }
 
-    private bool Activate(Pin pin)
+    private async Task<bool> Activate(Pin pin, Native.OpenWindow? selected = null)
     {
+        if (!activatingPins.Add(pin.Target)) return false;
         feedback.Text = "";
-        if (OpensFinder(pin))
+        try
         {
-            bool newWindow = finderHandle == 0;
-            OpenPin(pin);
-            return newWindow;
+            if (OpensFinder(pin) && selected is null)
+            {
+                bool newWindow = finderHandle == 0;
+                OpenPin(pin);
+                return newWindow;
+            }
+
+            var matches = windows.Where(item => pin.Matches(item.Path) && Native.WindowMatches(item)).ToArray();
+            var match = selected ?? matches.FirstOrDefault();
+            if (Prism.IsTrayClient(pin.Target) &&
+                await Prism.OpenRunning(pin.Target, match?.Handle ?? 0) is { } prismOpened)
+            {
+                if (!prismOpened) feedback.Text = "Windows не удалось вывести окно Prism";
+                return false;
+            }
+            if (match is not null)
+            {
+                if (!Native.WindowMatches(match) || !await Native.FocusWindow(match.Handle))
+                    feedback.Text = "Windows не удалось вывести окно приложения";
+                return false;
+            }
+            bool opened = OpenPin(pin);
+            if (!opened) feedback.Text = "Windows не удалось открыть приложение";
+            return opened;
         }
-        var matches = windows.Where(item => pin.Matches(item.Path)).ToArray();
-        var match = matches.FirstOrDefault(item => item.Handle != foreground) ?? matches.FirstOrDefault();
-        if (match is not null && Native.FocusWindow(match.Handle)) return false;
-        bool opened = OpenPin(pin);
-        if (!opened) feedback.Text = "Windows не удалось открыть приложение";
-        return opened;
+        finally { activatingPins.Remove(pin.Target); }
     }
 
     private static bool OpensFinder(Pin pin) => pin.Target == "explorer.exe" && pin.Arguments is "" or "shell:Downloads";

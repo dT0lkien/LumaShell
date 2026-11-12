@@ -2,16 +2,25 @@ namespace LumaShell;
 
 internal sealed class WinTap
 {
-    internal enum Action { Pass, Hold, Launch, OpenFolder, Suppress, ReplayTap, ReplayChord }
+    internal enum Action { Pass, Hold, Launch, OpenFolder, Capture, Suppress, ReplayTap, ReplayChord }
     private int pending;
+    private bool pendingModified;
+    private bool pendingLauncher;
     private int consumedWin;
-    private bool consumedE;
+    private int consumedKey;
+    private int passedWin;
 
-    internal Action Handle(int key, bool down, bool intercept, bool alreadyModified, bool openFolder = false)
+    internal Action Handle(int key, bool down, bool intercept, bool alreadyModified, bool openFolder = false, bool capture = false)
     {
-        if (key == 0x45 && consumedE)
+        int winBit = key switch { 0x5B => 1, 0x5C => 2, _ => 0 };
+        if ((passedWin & winBit) != 0)
         {
-            if (!down) consumedE = false;
+            if (!down) passedWin &= ~winBit;
+            return Action.Pass;
+        }
+        if (key == consumedKey)
+        {
+            if (!down) consumedKey = 0;
             return Action.Suppress;
         }
         if (consumedWin != 0)
@@ -23,14 +32,22 @@ internal sealed class WinTap
             }
             if (down)
             {
+                passedWin |= (consumedWin == 0x5B ? 1 : 2) | winBit;
                 consumedWin = 0;
                 return Action.ReplayChord;
             }
         }
         if (pending == 0)
         {
-            if ((!intercept && !openFolder) || !down || alreadyModified || key is not (0x5B or 0x5C)) return Action.Pass;
+            if (!down || winBit == 0) return Action.Pass;
+            if (!intercept && (!openFolder || alreadyModified))
+            {
+                passedWin |= winBit;
+                return Action.Pass;
+            }
             pending = key;
+            pendingModified = alreadyModified;
+            pendingLauncher = intercept;
             return Action.Hold;
         }
 
@@ -38,17 +55,20 @@ internal sealed class WinTap
         {
             if (down) return Action.Hold;
             pending = 0;
-            return intercept ? Action.Launch : Action.ReplayTap;
+            if (pendingModified) return Action.Suppress;
+            if (intercept) return Action.Launch;
+            return pendingLauncher ? Action.Suppress : Action.ReplayTap;
         }
 
         if (!down) return Action.Pass;
-        if (openFolder && key == 0x45)
+        if ((capture && key == 0x53) || (openFolder && !pendingModified && key == 0x45))
         {
             consumedWin = pending;
-            consumedE = true;
+            consumedKey = key;
             pending = 0;
-            return Action.OpenFolder;
+            return key == 0x53 ? Action.Capture : Action.OpenFolder;
         }
+        passedWin |= (pending == 0x5B ? 1 : 2) | winBit;
         pending = 0;
         return Action.ReplayChord;
     }

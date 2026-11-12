@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -84,16 +85,21 @@ internal static class FinderPreview
         var type = assembly.GetType("LumaShell.WinTap", throwOnError: true)!;
         var tap = Activator.CreateInstance(type, nonPublic: true)!;
         var handle = type.GetMethod("Handle", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        string Key(int key, bool down, bool launcher, bool finder) =>
-            handle.Invoke(tap, [key, down, launcher, false, finder])!.ToString()!;
-        const int win = 0x5B, e = 0x45, d = 0x44;
+        string Key(int key, bool down, bool launcher, bool finder, bool modified = false, bool capture = false) =>
+            handle.Invoke(tap, [key, down, launcher, modified, finder, capture])!.ToString()!;
+        const int win = 0x5B, e = 0x45, d = 0x44, s = 0x53;
         if (Key(win, true, true, true) != "Hold" || Key(e, true, true, true) != "OpenFolder" ||
             Key(e, true, true, true) != "Suppress" || Key(e, false, true, true) != "Suppress" ||
             Key(win, false, true, true) != "Suppress" ||
             Key(win, true, true, true) != "Hold" || Key(win, false, true, true) != "Launch" ||
             Key(win, true, false, true) != "Hold" || Key(win, false, false, true) != "ReplayTap" ||
             Key(win, true, true, true) != "Hold" || Key(d, true, true, true) != "ReplayChord" ||
-            Key(win, false, true, true) != "Pass")
+            Key(win, true, true, true) != "Pass" || Key(win, false, true, true) != "Pass" ||
+            Key(win, true, true, true, modified: true) != "Hold" || Key(win, false, true, true) != "Suppress" ||
+            Key(win, true, true, true) != "Hold" || Key(win, false, false, true) != "Suppress" ||
+            Key(win, true, true, true, modified: true) != "Hold" ||
+            Key(s, true, true, true, capture: true) != "Capture" || Key(s, false, true, true) != "Suppress" ||
+            Key(win, false, true, true) != "Suppress")
             throw new InvalidOperationException("Win+E did not preserve single Win and other Win shortcuts.");
         Console.WriteLine("Win+E routing preserved the launcher and other Win chords.");
     }
@@ -137,11 +143,18 @@ internal static class FinderPreview
                 throw new InvalidOperationException("Could not identify the hidden test window.");
             var type = assembly.GetType("LumaShell.Native", throwOnError: true)!;
             MethodInfo Method(string method) => type.GetMethod(method, BindingFlags.Static | BindingFlags.NonPublic)!;
-            var found = (nint)Method("FindTitledWindow").Invoke(null, [Environment.ProcessPath!, name.ToString(), hidden.Title])!;
-            if (found != handle || !(bool)Method("ShowApplicationWindow").Invoke(null, [found])!)
-                throw new InvalidOperationException("The tray restore path did not find and show the hidden window.");
-            PumpUntil(() => (bool)Method("IsApplicationWindowShown").Invoke(null, [found])!, "showing a hidden application window");
-            Console.WriteLine("The tray restore path located and showed a hidden application window.");
+            var found = (nint)Method("FindTitledWindow").Invoke(null, [Environment.ProcessPath!, name.ToString(), hidden.Title, (uint)Environment.ProcessId])!;
+            if (found != handle) throw new InvalidOperationException("The tray restore path did not find the hidden window.");
+            var activation = (Task<bool>)Method("FocusWindow").Invoke(null, [found])!;
+            PumpUntil(() => activation.IsCompleted, "showing a hidden application window");
+            if (!activation.GetAwaiter().GetResult() || !(bool)Method("IsApplicationWindowShown").Invoke(null, [found])!)
+                throw new InvalidOperationException("The tray restore path did not focus the hidden window.");
+            hidden.WindowState = WindowState.Minimized;
+            activation = (Task<bool>)Method("FocusWindow").Invoke(null, [found])!;
+            PumpUntil(() => activation.IsCompleted, "restoring a minimized application window");
+            if (!activation.GetAwaiter().GetResult() || !(bool)Method("IsApplicationWindowShown").Invoke(null, [found])!)
+                throw new InvalidOperationException("The Dock restore path did not focus the minimized window.");
+            Console.WriteLine("The window activation path restored and focused hidden and minimized windows.");
         }
         finally { hidden.Close(); }
     }

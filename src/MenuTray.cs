@@ -23,7 +23,7 @@ internal sealed class MenuTray
     private readonly Slider volume = new() { Minimum = 0, Maximum = 1, Width = 164, Margin = new Thickness(0, 3, 0, 0) };
     private readonly FrameworkElement networkIcon;
     private bool settingVolume;
-    private ushort displayedLanguage;
+    private string? displayedLanguage;
 
     internal FrameworkElement View => bar;
 
@@ -107,23 +107,15 @@ internal sealed class MenuTray
         if (popup.IsOpen) RefreshAudio();
     }
 
-    internal void RefreshInputLanguage(ushort language)
+    internal void RefreshInputLanguage(CultureInfo? culture)
     {
-        if (language == displayedLanguage) return;
-        displayedLanguage = language;
-        inputLanguage.Visibility = Visibility.Collapsed;
-        if (language == 0) return;
-
-        try
-        {
-            var culture = CultureInfo.GetCultureInfo(language);
-            inputLanguage.Text = culture.TwoLetterISOLanguageName.ToUpperInvariant();
-            string label = $"Язык ввода: {culture.DisplayName}";
-            inputLanguage.ToolTip = label;
-            System.Windows.Automation.AutomationProperties.SetName(inputLanguage, label);
-            inputLanguage.Visibility = Visibility.Visible;
-        }
-        catch (CultureNotFoundException) { }
+        if (culture is null || culture.Name == displayedLanguage) return;
+        displayedLanguage = culture.Name;
+        inputLanguage.Text = culture.TwoLetterISOLanguageName.ToUpperInvariant();
+        string label = $"Язык ввода: {culture.DisplayName}";
+        inputLanguage.ToolTip = label;
+        System.Windows.Automation.AutomationProperties.SetName(inputLanguage, label);
+        inputLanguage.Visibility = Visibility.Visible;
     }
 
     private void RefreshAudio()

@@ -26,6 +26,7 @@ public static class LumaLaunchProbe
     [DllImport("user32", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder title, int capacity);
     [DllImport("user32")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("kernel32")] public static extern uint SetErrorMode(uint mode);
+    [DllImport("user32")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("shell32", CharSet = CharSet.Unicode)] public static extern IntPtr ShellExecute(
         IntPtr owner, string verb, string file, string parameters, string directory, int show);
 
@@ -83,6 +84,26 @@ try {
         throw 'Luma started but did not register for logon.'
     }
     Write-Host 'The published executable kept the Dock and Island visible through startup.'
+
+    foreach ($win in 0x5B, 0x5C) {
+        [LumaLaunchProbe]::keybd_event($win, 0, 1, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 80
+        [LumaLaunchProbe]::keybd_event($win, 0, 3, [UIntPtr]::Zero)
+        $launcher = $false
+        for ($i = 0; $i -lt 30 -and !$launcher; $i++) {
+            Start-Sleep -Milliseconds 100
+            $launcher = [LumaLaunchProbe]::WindowVisible($process.Id, 'Luma • Приложения')
+        }
+        if (!$launcher) { throw "The Win key ($win) did not open the Luma launcher." }
+        [LumaLaunchProbe]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)
+        [LumaLaunchProbe]::keybd_event(0x1B, 0, 2, [UIntPtr]::Zero)
+        for ($i = 0; $i -lt 30 -and $launcher; $i++) {
+            Start-Sleep -Milliseconds 100
+            $launcher = [LumaLaunchProbe]::WindowVisible($process.Id, 'Luma • Приложения')
+        }
+        if ($launcher) { throw 'Escape did not close the Luma launcher.' }
+    }
+    Write-Host 'Both Win keys opened the Luma launcher, which received Escape.'
 
     $result = [LumaLaunchProbe]::ShellExecute([IntPtr]::Zero, $null, $folder, $null, $null, 1)
     if ($result.ToInt64() -le 32) { throw "Windows failed to open the sample folder ($result)." }

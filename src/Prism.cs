@@ -140,55 +140,54 @@ internal sealed class Prism(Preferences settings) : IDisposable
     }
 
     internal static bool IsTrayClient(string path) => Path.IsPathFullyQualified(path) &&
-        Path.GetFileName(path).Equals("Prism.exe", StringComparison.OrdinalIgnoreCase) &&
+        Path.GetFileName(path).Equals("Prism.exe", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsPrismInstallation(string path) => IsTrayClient(path) &&
         (File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "resources", "app.asar")) ||
             CoreLocations(path).Any(File.Exists));
 
-    internal static async Task<bool> OpenFromTray(string path)
-    {
-        if (!IsTrayClient(path)) return false;
-        nint window = FindWindow(path);
-        if (window != 0)
-            return await ActivateWindow(window) || await RequestElevatedActivation(Native.WindowProcessId(window));
+    internal static Task<bool?> OpenRunning(string path, nint preferred = 0, bool canElevate = true) =>
+        ActivateRunning(FindRunningWindow(path, preferred), canElevate);
 
-        // Prism's second-instance handler shows the existing window. Only use it
-        // for the exact running installation in this session.
+    private static async Task<bool?> ActivateRunning((nint Window, uint Process) running, bool canElevate = true)
+    {
+        var (window, process) = running;
+        if (window == 0 && process == 0) return null;
+        if (window != 0 && await Native.FocusWindow(window)) return true;
+        return canElevate && process != 0 && await RequestElevatedActivation(process);
+    }
+
+    private static (nint Window, uint Process) FindRunningWindow(string? path, nint preferred)
+    {
+        if (preferred != 0 && path is not null && string.Equals(Native.Executable(preferred), path, StringComparison.OrdinalIgnoreCase))
+            return (preferred, Native.WindowProcessId(preferred));
         using var current = Process.GetCurrentProcess();
-        bool running = false;
+        uint mainProcess = 0;
         foreach (var process in Process.GetProcessesByName("Prism"))
         {
             using (process)
             {
                 try
                 {
-                    if (process.SessionId == current.SessionId &&
-                        string.Equals(Native.ProcessImage((uint)process.Id), path, StringComparison.OrdinalIgnoreCase))
-                        running = true;
+                    uint pid = (uint)process.Id;
+                    if (process.SessionId != current.SessionId || Native.ProcessImage(pid) is not { } image ||
+                        path is not null && !string.Equals(image, path, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (FindWindow(image, pid) is var window && window != 0) return (window, pid);
+                    if (process.MainWindowHandle is var main && main != 0) return (main, pid);
+                    if (mainProcess == 0) mainProcess = pid;
                 }
                 catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
             }
         }
-        return running && Desktop.Launch(path);
+        return (0, mainProcess);
     }
 
-    private static nint FindWindow(string path)
+    private static nint FindWindow(string path, uint process)
     {
         foreach (string title in new[] { "Prism", "Prism VPN" })
             foreach (string className in new[] { "Chrome_WidgetWin_1", "Chrome_WidgetWin_0" })
-                if (Native.FindTitledWindow(path, className, title) is var window && window != 0) return window;
-        return 0;
-    }
-
-    private static async Task<bool> ActivateWindow(nint window)
-    {
-        if (!Native.IsApplicationWindowShown(window) && !Native.ShowApplicationWindow(window)) return false;
-        for (int attempt = 0; attempt < 6; attempt++)
-        {
-            if (Native.IsApplicationWindowShown(window) &&
-                (Native.GetForegroundWindow() == window || Native.FocusWindow(window))) return true;
-            await Task.Delay(45);
-        }
-        return false;
+                if (Native.FindTitledWindow(path, className, title, process) is var window && window != 0) return window;
+        return Native.FindTitledWindow(path, "Chrome_WidgetWin_1", null, process);
     }
 
     private static async Task<bool> RequestElevatedActivation(uint processId)
@@ -196,7 +195,7 @@ internal sealed class Prism(Preferences settings) : IDisposable
         if (processId == 0 || Worker.Executable is not { } luma) return false;
         try
         {
-            if (Native.ProcessImage(processId) is not { } path || !IsTrayClient(path)) return false;
+            if (Native.ProcessImage(processId) is not { } path || !IsPrismInstallation(path)) return false;
             long started = Native.ProcessCreationTime(processId);
             if (started == 0) return false;
             var start = new ProcessStartInfo(luma) { UseShellExecute = true, Verb = "runas" };
@@ -205,6 +204,7 @@ internal sealed class Prism(Preferences settings) : IDisposable
             start.ArgumentList.Add(started.ToString(System.Globalization.CultureInfo.InvariantCulture));
             using var helper = Process.Start(start);
             if (helper is null) return false;
+            Native.AllowSetForegroundWindow((uint)helper.Id);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
             await helper.WaitForExitAsync(timeout.Token);
             return helper.ExitCode == 0;
@@ -220,9 +220,10 @@ internal sealed class Prism(Preferences settings) : IDisposable
             using var prism = Process.GetProcessById(checked((int)processId));
             using var current = Process.GetCurrentProcess();
             if (prism.SessionId != current.SessionId || started == 0 || Native.ProcessCreationTime(processId) != started ||
-                Native.ProcessImage(processId) is not { } path || !IsTrayClient(path)) return false;
-            nint window = FindWindow(path);
-            return window != 0 && Native.WindowProcessId(window) == processId && ActivateWindow(window).GetAwaiter().GetResult();
+                Native.ProcessImage(processId) is not { } path || !IsPrismInstallation(path)) return false;
+            nint window = FindWindow(path, processId);
+            if (window == 0) window = prism.MainWindowHandle;
+            return window != 0 && Native.WindowProcessId(window) == processId && Native.FocusWindow(window).GetAwaiter().GetResult();
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or OverflowException)
         { return false; }
@@ -265,15 +266,12 @@ internal sealed class Prism(Preferences settings) : IDisposable
 
     private sealed record Endpoint(string Url, string Key);
 
-    internal static bool Open()
+    internal async void Open()
     {
-        foreach (var process in Process.GetProcessesByName("Prism"))
+        if (await ActivateRunning(FindRunningWindow(null, 0)) is { } opened)
         {
-            using (process)
-            {
-                try { if (process.MainWindowHandle is { } handle && handle != 0 && Native.FocusWindow(handle)) return true; }
-                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-            }
+            if (!opened) Feedback?.Invoke("Windows не удалось вывести окно Prism");
+            return;
         }
         string[] roots = [Environment.GetFolderPath(Environment.SpecialFolder.Programs),
             Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
@@ -284,11 +282,12 @@ internal sealed class Prism(Preferences settings) : IDisposable
             foreach (string name in new[] { "Prism.lnk", @"Prism\Prism.lnk", @"Prism\Prism.exe" })
             {
                 string path = Path.Combine(root, name);
-                if (File.Exists(path) && Desktop.Launch(path)) return true;
+                if (File.Exists(path) && Desktop.Launch(path)) return;
             }
         }
         var picker = new Microsoft.Win32.OpenFileDialog { Title = "Укажите Prism для Windows", Filter = "Приложение|*.exe" };
-        return picker.ShowDialog() == true && Desktop.Launch(picker.FileName);
+        if (picker.ShowDialog() == true && !Desktop.Launch(picker.FileName))
+            Feedback?.Invoke("Windows не удалось запустить Prism");
     }
 
     public void Dispose() => client.Dispose();

@@ -137,7 +137,16 @@ internal sealed class TrayIcons
         try
         {
             var window = Native.OpenWindows().FirstOrDefault(candidate => candidate.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase));
-            if ((window is not null && Native.FocusWindow(window.Handle)) || await Prism.OpenFromTray(item.Path))
+            bool opened;
+            if (Prism.IsTrayClient(item.Path))
+            {
+                nint preferred = window?.Handle ?? 0;
+                opened = await Prism.OpenRunning(item.Path, preferred, canElevate: false) == true;
+                if (!opened && popup.IsOpen) await Task.Run(() => NativeTrayMenu.TryActivate(item, false));
+                if (!opened) opened = await Prism.OpenRunning(item.Path, preferred) == true;
+            }
+            else opened = window is not null && await Native.FocusWindow(window.Handle);
+            if (opened)
                 popup.IsOpen = false;
             else status.Text = "Не удалось открыть окно. Системный трей доступен по Ctrl+Alt+B.";
         }

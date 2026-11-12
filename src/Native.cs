@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace LumaShell;
 
@@ -69,6 +71,21 @@ internal static class Native
     private static extern nint GetKeyboardLayout(uint thread);
 
     [DllImport("user32.dll")]
+    private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(nint window);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetAncestor(nint window, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetLastActivePopup(nint window);
+
+    [DllImport("user32.dll")]
+    internal static extern bool AllowSetForegroundWindow(uint process);
+
+    [DllImport("user32.dll")]
     private static extern bool IsZoomed(nint window);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
@@ -132,10 +149,29 @@ internal static class Native
         SetWindowPos(window, 0, 0, 0, 0, 0, 0x37); // FRAMECHANGED, keep size, position, Z order and activation.
     }
 
-    internal static bool FocusWindow(nint window)
+    internal static async Task<bool> FocusWindow(nint window)
     {
-        if (IsIconic(window)) ShowWindowAsync(window, 9);
-        return SetForegroundWindow(window);
+        if (window == 0 || !IsWindow(window)) return false;
+        nint root = GetAncestor(window, 3); // GA_ROOTOWNER includes an application's modal windows.
+        if (root == 0) root = window;
+        uint process = WindowProcessId(window);
+        if (process == 0) return false;
+        if (!IsApplicationWindowShown(window)) ShowApplicationWindow(window);
+        for (int attempt = 0; attempt < 7 && WindowProcessId(window) == process; attempt++)
+        {
+            nint popup = GetLastActivePopup(root);
+            nint target = popup != 0 && IsApplicationWindowShown(popup) ? popup : window;
+            if (IsApplicationWindowShown(target))
+            {
+                nint active = GetForegroundWindow();
+                if (active == target || active != 0 && GetAncestor(active, 3) == root) return true;
+                SetForegroundWindow(target);
+                if (GetForegroundWindow() == target) return true;
+            }
+            if (attempt == 6) break;
+            await Task.Delay(45).ConfigureAwait(false);
+        }
+        return false;
     }
 
     internal static string? Executable(nint window)
@@ -146,11 +182,30 @@ internal static class Native
 
     internal static uint WindowProcessId(nint window) => window != 0 && GetWindowThreadProcessId(window, out uint pid) != 0 ? pid : 0;
 
-    internal static ushort InputLanguage(nint window)
+    internal static CultureInfo? InputLanguage(nint window)
     {
         uint thread = window == 0 ? 0 : GetWindowThreadProcessId(window, out _);
-        // A zero thread ID would return Luma's own layout instead of the foreground layout.
-        return thread == 0 ? (ushort)0 : unchecked((ushort)GetKeyboardLayout(thread));
+        var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
+        if (thread != 0 && GetGUIThreadInfo(thread, ref info) && info.Focus != 0 &&
+            GetWindowThreadProcessId(info.Focus, out _) is var focusedThread && focusedThread != 0)
+            thread = focusedThread;
+        ushort language = thread == 0 ? (ushort)0 : unchecked((ushort)GetKeyboardLayout(thread));
+        CultureInfo? keyboard = null;
+        if (language is not (0 or 0x1000 or 0x2000 or 0x2400))
+        {
+            try { keyboard = CultureInfo.GetCultureInfo(language); }
+            catch (CultureNotFoundException) { }
+        }
+        // Use the focused app's layout when Windows has separate input methods for each window.
+        if (keyboard is not null && !IsDesktop(window)) return keyboard;
+        try
+        {
+            // WinRT resolves input methods and transient language IDs that cannot be mapped through an HKL.
+            if (Windows.Globalization.Language.CurrentInputMethodLanguageTag is { Length: > 0 } tag &&
+                !tag.Equals("und", StringComparison.OrdinalIgnoreCase)) return CultureInfo.GetCultureInfo(tag);
+        }
+        catch (Exception error) when (error is COMException or CultureNotFoundException) { }
+        return keyboard;
     }
 
     internal static string? ProcessImage(uint id)
@@ -179,7 +234,7 @@ internal static class Native
     internal static bool ShowApplicationWindow(nint window) => ShowWindowAsync(window, IsIconic(window) ? 9 : 5);
     internal static bool IsApplicationWindowShown(nint window) => IsWindowVisible(window) && !IsIconic(window);
 
-    internal static nint FindTitledWindow(string executable, string className, string title)
+    internal static nint FindTitledWindow(string executable, string className, string? title, uint process = 0)
     {
         nint match = 0;
         var text = new StringBuilder(128);
@@ -188,10 +243,19 @@ internal static class Native
             text.Clear();
             if (GetClassName(window, text, text.Capacity) == 0 ||
                 !text.ToString().Equals(className, StringComparison.Ordinal) || GetWindow(window, 4) != 0) return true;
-            text.Clear();
-            if (GetWindowText(window, text, text.Capacity) == 0 ||
-                !text.ToString().Equals(title, StringComparison.OrdinalIgnoreCase) ||
+            if (process != 0 && WindowProcessId(window) != process ||
                 !string.Equals(Executable(window), executable, StringComparison.OrdinalIgnoreCase)) return true;
+            if (title is null)
+            {
+                if ((GetWindowStyle(window, -20) & 0x80) != 0 || !GetWindowRect(window, out var bounds) ||
+                    bounds.Right - bounds.Left < 200 || bounds.Bottom - bounds.Top < 120) return true;
+            }
+            else
+            {
+                text.Clear();
+                if (GetWindowText(window, text, text.Capacity) == 0 ||
+                    !text.ToString().Equals(title, StringComparison.OrdinalIgnoreCase)) return true;
+            }
             if (match != 0)
             {
                 match = 0;
@@ -205,10 +269,10 @@ internal static class Native
 
     internal static void Shortcut(byte modifier, byte key)
     {
-        keybd_event(modifier, 0, 1, 0);
-        keybd_event(key, 0, 0, 0);
-        keybd_event(key, 0, 2, 0);
-        keybd_event(modifier, 0, 3, 0);
+        keybd_event(modifier, 0, 1, ShellShortcuts.ReplayMarker);
+        keybd_event(key, 0, 0, ShellShortcuts.ReplayMarker);
+        keybd_event(key, 0, 2, ShellShortcuts.ReplayMarker);
+        keybd_event(modifier, 0, 3, ShellShortcuts.ReplayMarker);
     }
 
     [DllImport("user32.dll")]
@@ -238,6 +302,17 @@ internal static class Native
     }
 
     internal sealed record OpenWindow(nint Handle, string Path, string Title);
+
+    internal static bool WindowMatches(OpenWindow window) =>
+        string.Equals(WindowApp(window.Handle), window.Path, StringComparison.OrdinalIgnoreCase);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo
+    {
+        internal int Size, Flags;
+        internal nint Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+        internal int Left, Top, Right, Bottom;
+    }
 
     internal static string? WindowApp(nint window)
     {

@@ -237,9 +237,9 @@ internal sealed class App : Application
         bool onDesktop = Native.IsDesktop(underlying);
         fullscreen = !onDesktop && Native.CoversPrimaryMonitor(underlying);
         bool showChrome = preferences.Chrome && !fullscreen;
-        shortcuts.LauncherAvailable = preferences.Chrome && !screenshots.Busy;
+        shortcuts.LauncherAvailable = preferences.Chrome;
         shortcuts.FinderAvailable = preferences.RouteFolders && !screenshots.Busy;
-        if (!shortcuts.LauncherAvailable) launcher.Close();
+        if (!shortcuts.LauncherAvailable || screenshots.Busy) launcher.Close();
         if (showChrome && !desktop.MenuBar.IsVisible)
         {
             desktop.MenuBar.Show();
@@ -247,7 +247,7 @@ internal sealed class App : Application
             desktop.RefreshClock();
         }
         else SetVisible(desktop.MenuBar, showChrome);
-        if (showChrome) desktop.RefreshInputLanguage(underlying);
+        if (showChrome) desktop.RefreshInputLanguage(foreground);
         if (showChrome && (NearDock() || desktop.Interacting)) keepDockUntil = DateTimeOffset.UtcNow.AddMilliseconds(850);
         bool showDock = showChrome && !screenshots.Busy && !taskbar.Revealing &&
             (preferences.DockAlways || onDesktop || DateTimeOffset.UtcNow < keepDockUntil);
@@ -302,7 +302,7 @@ internal sealed class App : Application
 
     private void ToggleLauncher()
     {
-        if (shortcuts.LauncherAvailable) launcher.Toggle(lastArea);
+        if (shortcuts.LauncherAvailable && !screenshots.Busy) launcher.Toggle(lastArea);
     }
 
     private void ToggleWin()
