@@ -79,6 +79,13 @@ function Wait-LumaDesktop([int]$PreviousId, [int]$TimeoutSeconds) {
     throw 'The Dock and Island did not reappear after an interrupted session.'
 }
 
+function Get-LumaRunCommand {
+    $key = Get-Item -LiteralPath $runKey -ErrorAction SilentlyContinue
+    if ($null -eq $key) { return }
+    try { $key.GetValue('LumaShell') }
+    finally { $key.Dispose() }
+}
+
 [LumaLaunchProbe]::SetErrorMode(3) | Out-Null
 $started = Get-Date
 $process = Start-Process -FilePath $app -PassThru
@@ -96,7 +103,7 @@ try {
     $registeredTask = $task -and $task.Actions.Execute -contains $app
     if ($registeredTask) {
         Write-Host 'Fresh-profile startup registered a Task Scheduler logon task.'
-    } elseif ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
+    } elseif ((Get-LumaRunCommand) -eq $runCommand) {
         Write-Host 'Fresh-profile startup registered the Windows Run fallback.'
     } else {
         throw 'Luma started but did not register for logon.'
@@ -174,7 +181,7 @@ try {
         if ($null -eq $savedSettings) { Remove-Item -LiteralPath $settingsFile -Force }
         else { [IO.File]::WriteAllBytes($settingsFile, [byte[]]$savedSettings) }
     }
-    if ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
+    if ((Get-LumaRunCommand) -eq $runCommand) {
         Remove-ItemProperty $runKey -Name LumaShell
     }
     foreach ($type in 'Directory', 'Drive') {
