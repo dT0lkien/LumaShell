@@ -12,6 +12,9 @@ $folderRoot = Join-Path $env:RUNNER_TEMP ('Luma-Folder-' + [Guid]::NewGuid().ToS
 $folder = Join-Path $folderRoot 'Папка для проверки'
 [IO.Directory]::CreateDirectory($folder) | Out-Null
 $appName = [IO.Path]::GetFileNameWithoutExtension($app)
+$lumaData = Join-Path $env:LOCALAPPDATA 'Luma Shell'
+$settingsFile = Join-Path $lumaData 'settings.json'
+$savedSettings = if (Test-Path -LiteralPath $settingsFile) { [IO.File]::ReadAllBytes($settingsFile) }
 
 Add-Type @'
 using System;
@@ -91,9 +94,6 @@ try {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     $registeredTask = $task -and $task.Actions.Execute -contains $app
     if ($registeredTask) {
-        if ($task.Settings.RestartCount -ne 2 -or $task.Settings.RestartInterval -ne 'PT1M') {
-            throw 'The logon task did not have the expected restart limit.'
-        }
         Write-Host 'Fresh-profile startup registered a Task Scheduler logon task.'
     } elseif ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
         Write-Host 'Fresh-profile startup registered the Windows Run fallback.'
@@ -132,23 +132,27 @@ try {
     if (!$found) { throw 'The Windows folder request did not reach the running Luma Finder.' }
     Write-Host 'Windows opened a Unicode folder with spaces in the running Luma Finder.'
 
-    $log = Join-Path $env:LOCALAPPDATA "Luma Shell\diagnostics\session-$($process.SessionId).log"
-    $previousId = $process.Id
-    Stop-Process -Id $previousId -Force
-    $process.WaitForExit()
-    if ($registeredTask) { Start-ScheduledTask -TaskName $taskName }
-    else { Start-Process -FilePath $app }
-    $process = Wait-LumaDesktop -PreviousId $previousId -TimeoutSeconds 25
+    $log = Join-Path $lumaData "diagnostics\session-$($process.SessionId).log"
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $previousId = $process.Id
+        Stop-Process -Id $previousId -Force
+        $process = Wait-LumaDesktop -PreviousId $previousId -TimeoutSeconds 25
+        Write-Host "Luma restored the Dock and Island after forced exit $attempt."
+        Start-Sleep -Seconds 2
+    }
     if (!(Select-String -LiteralPath $log -SimpleMatch 'Previous session ended without a shutdown record.' -Quiet)) {
         throw 'Luma did not record the interrupted session.'
     }
-    Write-Host 'Luma recorded an interrupted session after a forced process exit.'
-    if ($registeredTask) {
-        $previousId = $process.Id
-        Stop-Process -Id $previousId -Force
-        $process = Wait-LumaDesktop -PreviousId $previousId -TimeoutSeconds 95
-        Write-Host 'Task Scheduler relaunched Luma after an abnormal exit.'
+    Stop-Process -Id $process.Id -Force
+    $limitRecorded = $false
+    for ($i = 0; $i -lt 20 -and !$limitRecorded; $i++) {
+        Start-Sleep -Milliseconds 300
+        $limitRecorded = Select-String -LiteralPath $log -SimpleMatch 'Automatic restart limit reached.' -Quiet
     }
+    if (!$limitRecorded -or (Get-Process -Name $appName -ErrorAction SilentlyContinue | Where-Object Path -eq $app)) {
+        throw 'The recovery process did not respect the restart limit.'
+    }
+    Write-Host 'Luma recorded the interrupted session and stopped retrying at the limit.'
 } catch {
     $exeName = [IO.Path]::GetFileName($app)
     Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$started; Id=1000,1026} -ErrorAction SilentlyContinue |
@@ -160,8 +164,15 @@ try {
     if ($task -and $task.Actions.Execute -contains $app) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     }
-    Get-Process -Name $appName -ErrorAction SilentlyContinue |
-        Where-Object Path -eq $app | Stop-Process -Force -ErrorAction SilentlyContinue
+    $running = Get-Process -Name $appName -ErrorAction SilentlyContinue | Where-Object Path -eq $app
+    if ($running) {
+        [IO.Directory]::CreateDirectory($lumaData) | Out-Null
+        Set-Content -LiteralPath $settingsFile -Value '{"AutoStart":false}' -Encoding utf8NoBOM
+        $running | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        if ($null -eq $savedSettings) { Remove-Item -LiteralPath $settingsFile -Force }
+        else { [IO.File]::WriteAllBytes($settingsFile, [byte[]]$savedSettings) }
+    }
     if ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
         Remove-ItemProperty $runKey -Name LumaShell
     }

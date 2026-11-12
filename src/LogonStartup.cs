@@ -61,20 +61,13 @@ internal static class LogonStartup
                 if (existing is not null) folder.DeleteTask(name, 0);
                 return true;
             }
-            string definition = Definition(user, executable!);
             if (existing is not null)
             {
                 var current = XElement.Parse((string)((dynamic)existing).Xml);
-                if (Matches(current, executable))
-                {
-                    var settings = current.Element(Scheduler + "Settings");
-                    if (!(bool)((dynamic)existing).Enabled || settings is null ||
-                        settings.Element(Scheduler + "RestartOnFailure") is not null) return true;
-                    settings.Add(RestartSettings());
-                    definition = current.ToString(SaveOptions.DisableFormatting);
-                }
+                if (Matches(current, executable)) return true;
             }
-            created = folder.RegisterTask(name, definition, CreateOrUpdate | IgnoreRegistrationTriggers, user, null, InteractiveToken, null);
+            created = folder.RegisterTask(name, Definition(user, executable!), CreateOrUpdate | IgnoreRegistrationTriggers,
+                user, null, InteractiveToken, null);
             return created is not null;
         }
         catch (Exception error) when (error is COMException or IOException or UnauthorizedAccessException or System.Security.SecurityException or
@@ -142,9 +135,6 @@ internal static class LogonStartup
             (string?)command?.Element(Scheduler + "Arguments") == Argument;
     }
 
-    private static XElement RestartSettings() => new(Scheduler + "RestartOnFailure",
-        new XElement(Scheduler + "Interval", "PT1M"), new XElement(Scheduler + "Count", 2));
-
     private static string Definition(string user, string executable)
     {
         XElement Element(string name, object value) => new(Scheduler + name, value);
@@ -158,8 +148,7 @@ internal static class LogonStartup
                 Element("DisallowStartIfOnBatteries", false),
                 Element("StopIfGoingOnBatteries", false),
                 Element("ExecutionTimeLimit", "PT0S"),
-                Element("Priority", 5),
-                RestartSettings()
+                Element("Priority", 5)
             }),
             new XElement(Scheduler + "Actions", new XAttribute("Context", "User"),
                 Element("Exec", new object[]

@@ -55,11 +55,13 @@ internal static class Worker
                 long.TryParse(args[2], out long startedAt) && Prism.ActivateElevated(target, startedAt) ? 0 : 1;
             return true;
         }
-        if (args.Length == 0 || args[0] is not ("--watch-taskbar" or "--apply-update")) return false;
+        if (args.Length == 0 || args[0] is not ("--watch-taskbar" or "--watch-session" or "--apply-update")) return false;
         if (args.Length < 4 || !int.TryParse(args[1], out int pid) || !long.TryParse(args[2], out long started)) return true;
         using var parent = FindParent(pid, started);
         if (args[0] == "--watch-taskbar" && args.Length == 4 && Guid.TryParseExact(args[3], "N", out _))
             Taskbar.Watch(parent, args[3]);
+        if (args[0] == "--watch-session" && args.Length == 4)
+            SessionLog.Watch(parent, args[3]);
         if (args[0] == "--apply-update" && args.Length == 8)
             Updates.Apply(parent, args[3], args[4], args[5], args[6] == "restart", args[7]);
         return true;

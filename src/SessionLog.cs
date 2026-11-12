@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Threading;
 
 namespace LumaShell;
 
@@ -12,6 +14,8 @@ internal static class SessionLog
     private static readonly string SessionPath = Path.Combine(DirectoryPath, $"session-{Process.GetCurrentProcess().SessionId}");
     private static readonly string LogPath = SessionPath + ".log";
     private static readonly string ActivePath = SessionPath + ".active";
+    private static readonly string RestartPath = SessionPath + ".restarts";
+    private static bool watching;
 
     internal static bool Begin()
     {
@@ -24,7 +28,7 @@ internal static class SessionLog
                 interrupted = true;
                 Write("Previous session ended without a shutdown record.");
             }
-            File.WriteAllText(ActivePath, Environment.ProcessId.ToString());
+            File.WriteAllText(ActivePath, Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         AppDomain.CurrentDomain.UnhandledException += (_, args) => Write($"Unhandled exception: {args.ExceptionObject}");
@@ -40,6 +44,53 @@ internal static class SessionLog
     }
 
     internal static bool Open() => File.Exists(LogPath) && Desktop.Launch("notepad.exe", $"\"{LogPath}\"");
+
+    internal static void StartRecovery()
+    {
+        if (watching || Worker.Executable is not { } target) return;
+        watching = Worker.Start("--watch-session", target);
+        if (!watching) Write("Could not start the recovery process.");
+    }
+
+    internal static void Watch(Process? parent, string target)
+    {
+        try
+        {
+            if (parent is null || !string.Equals(Native.ProcessImage((uint)parent.Id), target, StringComparison.OrdinalIgnoreCase)) return;
+            string pid = parent.Id.ToString(CultureInfo.InvariantCulture);
+            parent.WaitForExit();
+            Thread.Sleep(750);
+            if (!Preferences.Load().AutoStart || !File.Exists(ActivePath) || File.ReadAllText(ActivePath) != pid) return;
+            Write($"Detected interrupted session (PID {pid}, exit code {parent.ExitCode}).");
+            if (!PermitRestart())
+            {
+                Write("Automatic restart limit reached.");
+                return;
+            }
+            if (!LogonStartup.StartRegistered(target) && !Desktop.Launch(target))
+                Write("Could not restart Luma after an interrupted session.");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        { Write($"Recovery process failed: {error}"); }
+    }
+
+    private static bool PermitRestart()
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var attempts = new System.Collections.Generic.List<string>(2);
+        if (File.Exists(RestartPath))
+        {
+            foreach (string line in File.ReadLines(RestartPath))
+            {
+                if (long.TryParse(line, NumberStyles.None, CultureInfo.InvariantCulture, out long time) &&
+                    time >= now - 600 && time <= now) attempts.Add(line);
+            }
+        }
+        if (attempts.Count >= 2) return false;
+        attempts.Add(now.ToString(CultureInfo.InvariantCulture));
+        File.WriteAllLines(RestartPath, attempts);
+        return true;
+    }
 
     internal static void Write(string message)
     {

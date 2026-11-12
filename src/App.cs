@@ -68,6 +68,7 @@ internal sealed class App : Application
         {
             Taskbar.Recover();
             taskbar.SetEnabled(preferences.Chrome && preferences.HideWindowsTaskbar);
+            if (preferences.AutoStart) SessionLog.StartRecovery();
             exitCode = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown, preferences = preferences,
                 taskbar = taskbar, initialFolder = folder, recoveredSession = recovered }.Run();
         }
@@ -173,6 +174,7 @@ internal sealed class App : Application
     {
         preferences.AutoStart = !preferences.AutoStart;
         if (!preferences.Save()) island.Flash("Не удалось сохранить настройку автозапуска");
+        if (preferences.AutoStart) SessionLog.StartRecovery();
         ConfigureStartup(interactive: true);
     }
 
