@@ -57,7 +57,8 @@ internal sealed class Desktop
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
         Action nativeTray, Action toggleTaskbar, Action update, Updates releases, Action openLauncher, Action toggleWin,
-        Action toggleStartup, Action<string?> openFinder, Action applyWallpaper, Action toggleFolderRouting)
+        Action toggleStartup, Action<string?> openFinder, Action applyWallpaper, Action toggleFolderRouting,
+        Action toggleAutoInstall, Action openSessionLog)
     {
         this.settings = settings;
         this.openLauncher = openLauncher;
@@ -76,7 +77,9 @@ internal sealed class Desktop
             Entry("Временно показать панель Windows", nativeTray),
             Entry(settings.WinLauncher ? "Вернуть меню Windows на Win" : "Открывать приложения Luma по Win", toggleWin),
             Entry(settings.AutoStart ? "Выключить автозапуск Luma" : "Запускать Luma при входе", toggleStartup),
-            Entry("Обновления Luma", update), Entry("Параметры Windows", () => Launch("ms-settings:")),
+            Entry("Обновления Luma", update),
+            Entry(settings.AutoInstallUpdates ? "Выключить установку в простое" : "Устанавливать обновления в простое", toggleAutoInstall),
+            Entry("Журнал Luma", openSessionLog), Entry("Параметры Windows", () => Launch("ms-settings:")),
             new Separator(), Entry("Выйти из Luma", exit)
         ]));
         activeApp.MaxWidth = 124;
@@ -501,6 +504,7 @@ internal sealed class Desktop
         if (args is not RenderingEventArgs frame || lastFrame == frame.RenderingTime) return;
         double elapsed = lastFrame is { } previous ? (frame.RenderingTime - previous).TotalMilliseconds : 8;
         lastFrame = frame.RenderingTime;
+        if (Mouse.LeftButton == MouseButtonState.Pressed) return;
         double blend = 1 - Math.Exp(-Math.Clamp(elapsed, 0, 64) / 58);
         if (targetsDirty) CalculateTargets();
         bool changing = false;
@@ -550,21 +554,25 @@ internal sealed class Desktop
 
     internal void SetDockVisible(bool visible, bool immediate)
     {
-        if (immediate && !visible && Launcher.IsVisible) Launcher.Hide();
-        if (dockVisible == visible) return;
+        bool wasVisible = Launcher.IsVisible;
+        if (dockVisible == visible && !(immediate && !visible && wasVisible)) return;
         dockVisible = visible;
-        if (visible && !Launcher.IsVisible) Launcher.Show();
+        double y = wasVisible ? dockSlide.Y : 13;
+        double opacity = wasVisible ? dock.Opacity : 0;
+        dockSlide.BeginAnimation(TranslateTransform.YProperty, null);
+        dock.BeginAnimation(UIElement.OpacityProperty, null);
+        dockSlide.Y = visible ? 0 : 13;
+        dock.Opacity = visible ? 1 : 0;
+        if (visible && !wasVisible) Launcher.Show();
         if (!animate || immediate)
         {
-            dockSlide.BeginAnimation(TranslateTransform.YProperty, null);
-            dock.BeginAnimation(UIElement.OpacityProperty, null);
             if (!visible && Launcher.IsVisible) Launcher.Hide();
             return;
         }
         var duration = TimeSpan.FromMilliseconds(visible ? 240 : 165);
-        dockSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(visible ? 10 : dockSlide.Y, visible ? 0 : 13, duration)
-            { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
-        var fade = new DoubleAnimation(visible ? 0.25 : dock.Opacity, visible ? 1 : 0, duration);
+        dockSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(y, dockSlide.Y, duration)
+            { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop });
+        var fade = new DoubleAnimation(opacity, dock.Opacity, duration) { FillBehavior = FillBehavior.Stop };
         if (!visible) fade.Completed += (_, _) => { if (!dockVisible && Launcher.IsVisible) Launcher.Hide(); };
         dock.BeginAnimation(UIElement.OpacityProperty, fade);
     }

@@ -74,6 +74,9 @@ internal static class Native
     private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
 
     [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LastInputInfo info);
+
+    [DllImport("user32.dll")]
     private static extern bool IsWindow(nint window);
 
     [DllImport("user32.dll")]
@@ -305,6 +308,17 @@ internal static class Native
 
     internal static bool WindowMatches(OpenWindow window) =>
         string.Equals(WindowApp(window.Handle), window.Path, StringComparison.OrdinalIgnoreCase);
+
+    internal static bool IdleFor(TimeSpan duration)
+    {
+        var input = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
+        if (!GetLastInputInfo(ref input)) return false;
+        uint elapsed = unchecked((uint)Environment.TickCount - input.Tick);
+        return elapsed < 0x80000000 && elapsed >= duration.TotalMilliseconds;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LastInputInfo { internal uint Size, Tick; }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct GuiThreadInfo

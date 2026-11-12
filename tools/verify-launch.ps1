@@ -11,6 +11,7 @@ $runCommand = '"{0}" --logon' -f $app
 $folderRoot = Join-Path $env:RUNNER_TEMP ('Luma-Folder-' + [Guid]::NewGuid().ToString('N'))
 $folder = Join-Path $folderRoot 'Папка для проверки'
 [IO.Directory]::CreateDirectory($folder) | Out-Null
+$appName = [IO.Path]::GetFileNameWithoutExtension($app)
 
 Add-Type @'
 using System;
@@ -63,6 +64,18 @@ public static class LumaLaunchProbe
 }
 '@
 
+function Wait-LumaDesktop([int]$PreviousId, [int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $running = Get-Process -Name $appName -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $app -and $_.Id -ne $PreviousId -and [LumaLaunchProbe]::DesktopVisible($_.Id) } |
+            Select-Object -First 1
+        if ($running) { return $running }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    throw 'The Dock and Island did not reappear after an interrupted session.'
+}
+
 [LumaLaunchProbe]::SetErrorMode(3) | Out-Null
 $started = Get-Date
 $process = Start-Process -FilePath $app -PassThru
@@ -76,7 +89,11 @@ try {
     if ($visibleFor -lt 14) { throw 'The Dock and Island did not stay visible for seven seconds.' }
 
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    if ($task -and $task.Actions.Execute -contains $app) {
+    $registeredTask = $task -and $task.Actions.Execute -contains $app
+    if ($registeredTask) {
+        if ($task.Settings.RestartCount -ne 2 -or $task.Settings.RestartInterval -ne 'PT1M') {
+            throw 'The logon task did not have the expected restart limit.'
+        }
         Write-Host 'Fresh-profile startup registered a Task Scheduler logon task.'
     } elseif ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
         Write-Host 'Fresh-profile startup registered the Windows Run fallback.'
@@ -114,6 +131,24 @@ try {
     }
     if (!$found) { throw 'The Windows folder request did not reach the running Luma Finder.' }
     Write-Host 'Windows opened a Unicode folder with spaces in the running Luma Finder.'
+
+    $log = Join-Path $env:LOCALAPPDATA "Luma Shell\diagnostics\session-$($process.SessionId).log"
+    $previousId = $process.Id
+    Stop-Process -Id $previousId -Force
+    $process.WaitForExit()
+    if ($registeredTask) { Start-ScheduledTask -TaskName $taskName }
+    else { Start-Process -FilePath $app }
+    $process = Wait-LumaDesktop -PreviousId $previousId -TimeoutSeconds 25
+    if (!(Select-String -LiteralPath $log -SimpleMatch 'Previous session ended without a shutdown record.' -Quiet)) {
+        throw 'Luma did not record the interrupted session.'
+    }
+    Write-Host 'Luma recorded an interrupted session after a forced process exit.'
+    if ($registeredTask) {
+        $previousId = $process.Id
+        Stop-Process -Id $previousId -Force
+        $process = Wait-LumaDesktop -PreviousId $previousId -TimeoutSeconds 95
+        Write-Host 'Task Scheduler relaunched Luma after an abnormal exit.'
+    }
 } catch {
     $exeName = [IO.Path]::GetFileName($app)
     Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$started; Id=1000,1026} -ErrorAction SilentlyContinue |
@@ -121,11 +156,12 @@ try {
         Select-Object -ExpandProperty Message | Write-Host
     throw
 } finally {
-    if (!$process.HasExited) { Stop-Process -Id $process.Id -Force }
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($task -and $task.Actions.Execute -contains $app) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     }
+    Get-Process -Name $appName -ErrorAction SilentlyContinue |
+        Where-Object Path -eq $app | Stop-Process -Force -ErrorAction SilentlyContinue
     if ((Get-ItemPropertyValue $runKey -Name LumaShell -ErrorAction SilentlyContinue) -eq $runCommand) {
         Remove-ItemProperty $runKey -Name LumaShell
     }

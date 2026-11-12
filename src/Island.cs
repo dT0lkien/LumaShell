@@ -63,6 +63,7 @@ internal sealed partial class Island
     internal Window Window { get; } = Overlay("Luma • Dynamic Island", PanelWidth, PanelHeight);
     internal bool Expanded => expanded;
     internal bool ClipboardEnabled => clipboardEnabled;
+    internal bool KeepSession => expanded || focus.Running || focus.Paused || history.Count != 0;
     internal event Action? ClipboardToggleRequested;
     internal event Action? Collapsed;
 

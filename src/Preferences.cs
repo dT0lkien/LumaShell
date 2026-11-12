@@ -12,6 +12,7 @@ internal sealed class Preferences
 
     public bool Chrome { get; set; } = true;
     public bool AutoStart { get; set; } = true;
+    public bool AutoInstallUpdates { get; set; } = true;
     public bool DockAlways { get; set; } = true;
     public bool RouteFolders { get; set; } = true;
     public bool StyleExplorerFrame { get; set; } = true;

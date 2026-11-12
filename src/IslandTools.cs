@@ -1,9 +1,11 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using static LumaShell.Visuals;
 
 namespace LumaShell;
@@ -108,14 +110,42 @@ internal sealed partial class Island
         {
             string name = Path.GetFileNameWithoutExtension(path);
             string label = name.Length >= 24 ? name[5..24].Replace('_', ' ') : name;
-            var row = Button(Text($"▧   Снимок {label}", 12), "Открыть снимок", () =>
+            var preview = new Image { Width = 62, Height = 37, Stretch = Stretch.Uniform };
+            RenderOptions.SetBitmapScalingMode(preview, BitmapScalingMode.HighQuality);
+            var thumbnail = Surface(Paint("#FF2C303B"), 6, preview);
+            thumbnail.Margin = new Thickness(0, 0, 9, 0);
+            var content = new StackPanel { Orientation = Orientation.Horizontal };
+            content.Children.Add(thumbnail);
+            content.Children.Add(Text($"Снимок {label}", 12));
+            var row = Button(content, $"Открыть снимок {label}", () =>
             {
                 if (!File.Exists(path) || !Desktop.Launch(path)) Flash("Снимок перемещён или недоступен");
             }, Card);
             row.HorizontalContentAlignment = HorizontalAlignment.Left;
             row.Margin = new Thickness(2, 0, 2, 4);
             shotItems.Children.Add(row);
+            _ = LoadScreenshotPreview(path, preview);
         }
+    }
+
+    private static async Task LoadScreenshotPreview(string path, Image preview)
+    {
+        try
+        {
+            preview.Source = await Task.Run(() =>
+            {
+                using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.DecodePixelWidth = 124;
+                bitmap.StreamSource = stream;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                return bitmap;
+            });
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or FileFormatException or NotSupportedException) { }
     }
 
     private FrameworkElement BuildActivity()

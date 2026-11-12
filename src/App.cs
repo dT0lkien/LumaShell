@@ -37,16 +37,17 @@ internal sealed class App : Application
     private int ticks;
     private Rect lastArea = Rect.Empty;
     private DateTimeOffset keepDockUntil;
+    private bool recoveredSession;
     private readonly SemaphoreSlim startupGate = new(1);
     private readonly CancellationTokenSource folderRequests = new();
     private string? initialFolder;
 
     [STAThread]
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
-        if (Worker.Handle(args)) return;
+        if (Worker.Handle(args)) return Environment.ExitCode;
         string? folder = FolderRouting.ReadArgument(args);
-        if (args.Length > 0 && args[0] == FolderRouting.Argument && folder is null) return;
+        if (args.Length > 0 && args[0] == FolderRouting.Argument && folder is null) return 0;
         using var instance = new Mutex(true, @"Local\LumaShell.Overlay", out bool first);
         if (!first)
         {
@@ -57,14 +58,21 @@ internal sealed class App : Application
                 app.Startup += (_, _) => window.OpenFolder(folder);
                 app.Run();
             }
-            return;
+            return 0;
         }
         var preferences = Preferences.Load();
-        if (args.Length > 0 && args[0] == LogonStartup.Argument && !preferences.AutoStart) return;
-        using var taskbar = new Taskbar();
-        Taskbar.Recover();
-        taskbar.SetEnabled(preferences.Chrome && preferences.HideWindowsTaskbar);
-        new App { ShutdownMode = ShutdownMode.OnExplicitShutdown, preferences = preferences, taskbar = taskbar, initialFolder = folder }.Run();
+        if (args.Length > 0 && args[0] == LogonStartup.Argument && !preferences.AutoStart) return 0;
+        bool recovered = SessionLog.Begin();
+        int exitCode;
+        using (var taskbar = new Taskbar())
+        {
+            Taskbar.Recover();
+            taskbar.SetEnabled(preferences.Chrome && preferences.HideWindowsTaskbar);
+            exitCode = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown, preferences = preferences,
+                taskbar = taskbar, initialFolder = folder, recoveredSession = recovered }.Run();
+        }
+        SessionLog.End(exitCode);
+        return exitCode;
     }
 
     protected override void OnStartup(StartupEventArgs args)
@@ -82,7 +90,7 @@ internal sealed class App : Application
         island = new Island(screenshots, activity, prism, network, preferences, ToggleSnip);
         desktop = new Desktop(preferences, tab => OpenIsland(tab), screenshots.Begin, screenshots.OpenFolder, CloseFromMenu,
             taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher,
-            ToggleWin, ToggleStartup, OpenFinder, ApplyWallpaper, ToggleFolderRouting);
+            ToggleWin, ToggleStartup, OpenFinder, ApplyWallpaper, ToggleFolderRouting, ToggleAutoInstall, OpenSessionLog);
         topBar = new TopBar(desktop.MenuBar);
         islandHandle = new WindowInteropHelper(island.Window).EnsureHandle();
         HwndSource.FromHwnd(islandHandle).AddHook(WindowMessage);
@@ -110,6 +118,7 @@ internal sealed class App : Application
         prism.Refresh();
         network.Refresh();
         if (Updates.ReadResult() is { } updateResult) island.Flash(updateResult);
+        else if (recoveredSession) island.Flash("Luma снова запущена · проверьте журнал в меню");
         CreateTray();
         desktop.RefreshTray();
         ticker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
@@ -145,8 +154,19 @@ internal sealed class App : Application
         if (ticks % 20 == 0 && desktop.MenuBar.IsVisible) desktop.RefreshTray();
         if (ticks % 30 == 0) prism.Refresh();
         if (ticks % 300 == 0) network.Refresh();
-        if (ticks % 50 == 0) desktop.RefreshClock();
-        if (ticks % 108000 == 75) updates.Check();
+        if (ticks % 50 == 0)
+        {
+            desktop.RefreshClock();
+            if (preferences.AutoInstallUpdates && updates.CanInstallAutomatically &&
+                finder is null && !fullscreen && !screenshots.Busy && !island.KeepSession && !taskbar.Revealing &&
+                Native.IsDesktop(Native.GetForegroundWindow()) && Native.IdleFor(TimeSpan.FromMinutes(3)) &&
+                updates.Schedule(restart: true, automatic: true))
+            {
+                Shutdown();
+                return;
+            }
+        }
+        if (ticks % 18000 == 75) updates.Check(autoInstall: preferences.AutoInstallUpdates);
     }
 
     private void ToggleStartup()
@@ -342,8 +362,22 @@ internal sealed class App : Application
 
     private void UpdateFromMenu()
     {
-        if (!updates.Ready) updates.Check(true);
+        if (!updates.Ready) updates.Check(interactive: true, autoInstall: preferences.AutoInstallUpdates);
         else if (updates.Schedule(true)) Shutdown();
+    }
+
+    private void ToggleAutoInstall()
+    {
+        preferences.AutoInstallUpdates = !preferences.AutoInstallUpdates;
+        preferences.Save();
+        updates.RefreshReadyStatus(preferences.AutoInstallUpdates);
+        if (!updates.Ready) island.Flash(preferences.AutoInstallUpdates ?
+            "Обновления устанавливаются в простое" : "Обновления устанавливаются по кнопке или при выходе");
+    }
+
+    private void OpenSessionLog()
+    {
+        if (!SessionLog.Open()) island.Flash("Не удалось открыть журнал Luma");
     }
 
     private void CloseFromMenu()
@@ -437,6 +471,7 @@ internal sealed class App : Application
         menu.Items.Add(hideTaskbarMenu);
         var update = menu.Items.Add("Проверить обновления", null, (_, _) => UpdateFromMenu());
         updates.Changed += () => update.Text = updates.Ready ? "Установить обновление и перезапустить" : "Проверить обновления";
+        menu.Items.Add("Журнал Luma", null, (_, _) => OpenSessionLog());
         menu.Items.Add("Настройки панели задач Windows", null, (_, _) => Desktop.Launch("ms-settings:taskbar"));
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Выйти", null, (_, _) => CloseFromMenu());

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
+using System.Threading;
 using System.Xml.Linq;
 using Microsoft.Win32;
 
@@ -14,6 +15,7 @@ internal static class LogonStartup
     private const string RunName = "LumaShell";
     private const int InteractiveToken = 3;
     private const int CreateOrUpdate = 6;
+    private const int IgnoreRegistrationTriggers = 0x20;
     private static readonly XNamespace Scheduler = "http://schemas.microsoft.com/windows/2004/02/mit/task";
 
     internal static bool Configure(bool enabled)
@@ -47,12 +49,9 @@ internal static class LogonStartup
             using var identity = WindowsIdentity.GetCurrent();
             if (identity.User?.Value is not { } user) return false;
             string name = $"LumaShell-{user}";
-            var type = Type.GetTypeFromProgID("Schedule.Service");
-            if (type is null || (service = Activator.CreateInstance(type)) is null) return false;
-            dynamic connection = service;
-            connection.Connect();
-            root = connection.GetFolder(@"\");
-            dynamic folder = root!;
+            root = Connect(out service);
+            if (root is null) return false;
+            dynamic folder = root;
             try { existing = folder.GetTask(name); }
             // COM automation maps ERROR_FILE_NOT_FOUND to FileNotFoundException on .NET.
             catch (Exception error) when ((error is FileNotFoundException or COMException) &&
@@ -62,15 +61,20 @@ internal static class LogonStartup
                 if (existing is not null) folder.DeleteTask(name, 0);
                 return true;
             }
+            string definition = Definition(user, executable!);
             if (existing is not null)
             {
-                // Preserve a task disabled by the user in Task Scheduler.
-                string xml = ((dynamic)existing).Xml;
-                var command = XElement.Parse(xml).Element(Scheduler + "Actions")?.Element(Scheduler + "Exec");
-                if (string.Equals((string?)command?.Element(Scheduler + "Command"), executable, StringComparison.OrdinalIgnoreCase) &&
-                    (string?)command?.Element(Scheduler + "Arguments") == Argument) return true;
+                var current = XElement.Parse((string)((dynamic)existing).Xml);
+                if (Matches(current, executable))
+                {
+                    var settings = current.Element(Scheduler + "Settings");
+                    if (!(bool)((dynamic)existing).Enabled || settings is null ||
+                        settings.Element(Scheduler + "RestartOnFailure") is not null) return true;
+                    settings.Add(RestartSettings());
+                    definition = current.ToString(SaveOptions.DisableFormatting);
+                }
             }
-            created = folder.RegisterTask(name, Definition(user, executable!), CreateOrUpdate, user, null, InteractiveToken, null);
+            created = folder.RegisterTask(name, definition, CreateOrUpdate | IgnoreRegistrationTriggers, user, null, InteractiveToken, null);
             return created is not null;
         }
         catch (Exception error) when (error is COMException or IOException or UnauthorizedAccessException or System.Security.SecurityException or
@@ -85,6 +89,62 @@ internal static class LogonStartup
         }
     }
 
+    internal static bool StartRegistered(string executable)
+    {
+        if (!Preferences.Load().AutoStart) return false;
+        object? service = null, root = null, existing = null, started = null;
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            if (identity.User?.Value is not { } user) return false;
+            root = Connect(out service);
+            if (root is null) return false;
+            existing = ((dynamic)root).GetTask($"LumaShell-{user}");
+            dynamic task = existing!;
+            if (!(bool)task.Enabled || !Matches(XElement.Parse((string)task.Xml), executable)) return false;
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                if ((int)task.State == 3) // TASK_STATE_READY
+                {
+                    started = task.Run(null);
+                    return started is not null;
+                }
+                if (attempt < 5) Thread.Sleep(250);
+            }
+            return false;
+        }
+        catch (Exception error) when (error is COMException or IOException or UnauthorizedAccessException or System.Security.SecurityException or
+            Microsoft.CSharp.RuntimeBinder.RuntimeBinderException or System.Xml.XmlException)
+        { return false; }
+        finally
+        {
+            Release(started);
+            Release(existing);
+            Release(root);
+            Release(service);
+        }
+    }
+
+    private static object? Connect(out object? service)
+    {
+        var type = Type.GetTypeFromProgID("Schedule.Service");
+        service = type is null ? null : Activator.CreateInstance(type);
+        if (service is null) return null;
+        dynamic connection = service;
+        connection.Connect();
+        return connection.GetFolder(@"\");
+    }
+
+    private static bool Matches(XElement task, string? executable)
+    {
+        var command = task.Element(Scheduler + "Actions")?.Element(Scheduler + "Exec");
+        return string.Equals((string?)command?.Element(Scheduler + "Command"), executable, StringComparison.OrdinalIgnoreCase) &&
+            (string?)command?.Element(Scheduler + "Arguments") == Argument;
+    }
+
+    private static XElement RestartSettings() => new(Scheduler + "RestartOnFailure",
+        new XElement(Scheduler + "Interval", "PT1M"), new XElement(Scheduler + "Count", 2));
+
     private static string Definition(string user, string executable)
     {
         XElement Element(string name, object value) => new(Scheduler + name, value);
@@ -98,7 +158,8 @@ internal static class LogonStartup
                 Element("DisallowStartIfOnBatteries", false),
                 Element("StopIfGoingOnBatteries", false),
                 Element("ExecutionTimeLimit", "PT0S"),
-                Element("Priority", 5)
+                Element("Priority", 5),
+                RestartSettings()
             }),
             new XElement(Scheduler + "Actions", new XAttribute("Context", "User"),
                 Element("Exec", new object[]
