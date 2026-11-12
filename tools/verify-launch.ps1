@@ -82,6 +82,7 @@ function Wait-LumaDesktop([int]$PreviousId, [int]$TimeoutSeconds) {
 [LumaLaunchProbe]::SetErrorMode(3) | Out-Null
 $started = Get-Date
 $process = Start-Process -FilePath $app -PassThru
+$log = Join-Path $lumaData "diagnostics\session-$($process.SessionId).log"
 try {
     $visibleFor = 0
     for ($i = 0; $i -lt 46 -and $visibleFor -lt 14; $i++) {
@@ -132,7 +133,6 @@ try {
     if (!$found) { throw 'The Windows folder request did not reach the running Luma Finder.' }
     Write-Host 'Windows opened a Unicode folder with spaces in the running Luma Finder.'
 
-    $log = Join-Path $lumaData "diagnostics\session-$($process.SessionId).log"
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         $previousId = $process.Id
         Stop-Process -Id $previousId -Force
@@ -154,6 +154,7 @@ try {
     }
     Write-Host 'Luma recorded the interrupted session and stopped retrying at the limit.'
 } catch {
+    if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 25 | Write-Host }
     $exeName = [IO.Path]::GetFileName($app)
     Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$started; Id=1000,1026} -ErrorAction SilentlyContinue |
         Where-Object { $_.Message -like "*$exeName*" } |

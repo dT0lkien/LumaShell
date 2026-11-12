@@ -49,26 +49,36 @@ internal static class SessionLog
     {
         if (watching || Worker.Executable is not { } target) return;
         watching = Worker.Start("--watch-session", target);
-        if (!watching) Write("Could not start the recovery process.");
+        Write(watching ? "Started the recovery process." : "Could not start the recovery process.");
     }
 
     internal static void Watch(Process? parent, string target)
     {
         try
         {
-            if (parent is null || !string.Equals(Native.ProcessImage((uint)parent.Id), target, StringComparison.OrdinalIgnoreCase)) return;
+            if (parent is null)
+            {
+                Write("Recovery process could not attach to the parent.");
+                return;
+            }
+            if (!string.Equals(Native.ProcessImage((uint)parent.Id), target, StringComparison.OrdinalIgnoreCase))
+            {
+                Write("Recovery process found a different parent executable.");
+                return;
+            }
             string pid = parent.Id.ToString(CultureInfo.InvariantCulture);
+            Write($"Recovery process attached to PID {pid}.");
             parent.WaitForExit();
             Thread.Sleep(750);
             if (!Preferences.Load().AutoStart || !File.Exists(ActivePath) || File.ReadAllText(ActivePath) != pid) return;
-            Write($"Detected interrupted session (PID {pid}, exit code {parent.ExitCode}).");
+            Write($"Detected interrupted session (PID {pid}).");
             if (!PermitRestart())
             {
                 Write("Automatic restart limit reached.");
                 return;
             }
-            if (!LogonStartup.StartRegistered(target) && !Desktop.Launch(target))
-                Write("Could not restart Luma after an interrupted session.");
+            using var restarted = Process.Start(new ProcessStartInfo(target) { UseShellExecute = false });
+            Write(restarted is null ? "Could not restart Luma after an interrupted session." : $"Restarted Luma as PID {restarted.Id}.");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         { Write($"Recovery process failed: {error}"); }
