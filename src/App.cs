@@ -85,7 +85,7 @@ internal sealed class App : Application
         network = new PublicNetwork();
         updates = new Updates();
         launcher = new Launcher(() => OpenFinder(null), RevealFinderItem,
-            app => desktop.IsPinned(app), app => desktop.TogglePin(app));
+            app => desktop.IsPinned(app), app => desktop.TogglePin(app)) { InvokeTray = executable => desktop.InvokeTrayIcon(executable) };
         shortcuts = new ShellShortcuts(Dispatcher, screenshots.Begin, ToggleLauncher, OpenDefaultFinder);
         if (!shortcuts.Configure(preferences.ReplaceSnip, preferences.WinLauncher, preferences.RouteFolders))
             preferences.ReplaceSnip = preferences.WinLauncher = false;
@@ -93,6 +93,7 @@ internal sealed class App : Application
         desktop = new Desktop(preferences, tab => OpenIsland(tab), screenshots.Begin, screenshots.OpenFolder, CloseFromMenu,
             taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher,
             ToggleWin, ToggleStartup, OpenFinder, ApplyWallpaper, ToggleFolderRouting, ToggleAutoInstall, OpenSessionLog);
+        prism.InvokeTray = desktop.InvokeTrayIcon;
         topBar = new TopBar(desktop.MenuBar);
         islandHandle = new WindowInteropHelper(island.Window).EnsureHandle();
         HwndSource.FromHwnd(islandHandle).AddHook(WindowMessage);

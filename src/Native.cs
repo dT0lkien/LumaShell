@@ -86,9 +86,6 @@ internal static class Native
     private static extern nint GetLastActivePopup(nint window);
 
     [DllImport("user32.dll")]
-    internal static extern bool AllowSetForegroundWindow(uint process);
-
-    [DllImport("user32.dll")]
     private static extern bool IsZoomed(nint window);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
@@ -114,9 +111,6 @@ internal static class Native
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern bool QueryFullProcessImageName(nint process, uint flags, StringBuilder path, ref int capacity);
-    [DllImport("kernel32.dll")]
-    private static extern bool GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
-
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(nint handle);
 
@@ -160,7 +154,7 @@ internal static class Native
         uint process = WindowProcessId(window);
         if (process == 0) return false;
         if (!IsApplicationWindowShown(window)) ShowApplicationWindow(window);
-        for (int attempt = 0; attempt < 7 && WindowProcessId(window) == process; attempt++)
+        for (int attempt = 0; attempt < 10 && WindowProcessId(window) == process; attempt++)
         {
             nint popup = GetLastActivePopup(root);
             nint target = popup != 0 && IsApplicationWindowShown(popup) ? popup : window;
@@ -170,8 +164,10 @@ internal static class Native
                 if (active == target || active != 0 && GetAncestor(active, 3) == root) return true;
                 SetForegroundWindow(target);
                 if (GetForegroundWindow() == target) return true;
+                if (attempt == 0 && IsApplicationWindowShown(target))
+                    SetWindowPos(target, 0, 0, 0, 0, 0, 0x13); // Raise without stealing keyboard focus.
             }
-            if (attempt == 6) break;
+            if (attempt == 9) break;
             await Task.Delay(45).ConfigureAwait(false);
         }
         return false;
@@ -221,14 +217,6 @@ internal static class Native
             int size = path.Capacity;
             return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString() : null;
         }
-        finally { CloseHandle(process); }
-    }
-
-    internal static long ProcessCreationTime(uint id)
-    {
-        nint process = OpenProcess(0x1000, false, id);
-        if (process == 0) return 0;
-        try { return GetProcessTimes(process, out long creation, out _, out _, out _) ? creation : 0; }
         finally { CloseHandle(process); }
     }
 
@@ -298,15 +286,34 @@ internal static class Native
             var title = new StringBuilder(256);
             if (GetWindowText(window, title, title.Capacity) == 0) return true;
             var path = WindowApp(window);
-            if (path is not null) windows.Add(new(window, path, title.ToString()));
+            if (path is not null && WindowProcessId(window) is var process && process != 0)
+                windows.Add(new(window, path, title.ToString(), process));
             return windows.Count < 60;
         }, 0);
         return windows;
     }
 
-    internal sealed record OpenWindow(nint Handle, string Path, string Title);
+    internal sealed record OpenWindow(nint Handle, string Path, string Title, uint Process);
+
+    internal static string? WindowApplicationId(nint window)
+    {
+        uint id = WindowProcessId(window);
+        nint process = id == 0 ? 0 : OpenProcess(0x1000, false, id);
+        if (process == 0) return null;
+        try
+        {
+            var name = new StringBuilder(130);
+            uint size = (uint)name.Capacity;
+            return GetApplicationUserModelId(process, ref size, name) == 0 ? name.ToString() : null;
+        }
+        finally { CloseHandle(process); }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int GetApplicationUserModelId(nint process, ref uint size, StringBuilder name);
 
     internal static bool WindowMatches(OpenWindow window) =>
+        WindowProcessId(window.Handle) == window.Process &&
         string.Equals(WindowApp(window.Handle), window.Path, StringComparison.OrdinalIgnoreCase);
 
     internal static bool IdleFor(TimeSpan duration)

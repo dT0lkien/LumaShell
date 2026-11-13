@@ -5,21 +5,74 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 namespace LumaShell;
 
 internal static class TrayAppActions
 {
     private static readonly string Windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows) + Path.DirectorySeparatorChar;
+    private const string NvidiaControlPanelFamily = "NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj";
 
     internal static bool IsLuma(string path) => string.Equals(path, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase);
+
+    internal static bool IsNvidiaControlPanel(TraySnapshot.Item item) => IsNvidiaControlPanel(item.Path, item.Title);
+
+    internal static bool IsNvidiaControlPanel(string path, string title)
+    {
+        string file = Path.GetFileName(path);
+        if (file.Equals("nvtray.exe", StringComparison.OrdinalIgnoreCase) ||
+            file.Equals("nvcplui.exe", StringComparison.OrdinalIgnoreCase)) return true;
+        bool panelLabel = title.StartsWith("NVIDIA Settings", StringComparison.OrdinalIgnoreCase) ||
+            title.StartsWith("Настройки NVIDIA", StringComparison.OrdinalIgnoreCase) ||
+            title.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) &&
+            (title.Contains("Control Panel", StringComparison.OrdinalIgnoreCase) ||
+             title.Contains("Панель управления", StringComparison.OrdinalIgnoreCase));
+        return panelLabel && (string.IsNullOrEmpty(file) || file.Equals("nvcontainer.exe", StringComparison.OrdinalIgnoreCase) ||
+            file.Equals("nvdisplay.container.exe", StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static async Task<bool> OpenNvidiaControlPanel()
+    {
+        var existing = Native.OpenWindows().FirstOrDefault(window =>
+            Path.GetFileName(window.Path).Equals("nvcplui.exe", StringComparison.OrdinalIgnoreCase));
+        if (existing is not null && await Native.FocusWindow(existing.Handle)) return true;
+        bool opened = await Task.Run(ActivateNvidiaPackage);
+        if (opened) return true;
+        var programs = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 };
+        foreach (var folder in programs)
+        {
+            string path = Path.Combine(Environment.GetFolderPath(folder), "NVIDIA Corporation", "Control Panel Client", "nvcplui.exe");
+            if (Path.IsPathFullyQualified(path) && File.Exists(path) && Desktop.Launch(path)) return true;
+        }
+        SessionLog.Write("NVIDIA Control Panel could not be activated from the tray.");
+        return false;
+    }
+
+    private static async Task<bool> ActivateNvidiaPackage()
+    {
+        try
+        {
+            foreach (var package in new global::Windows.Management.Deployment.PackageManager().FindPackagesForUser("", NvidiaControlPanelFamily))
+            {
+                foreach (var app in package.GetAppListEntries())
+                {
+                    if (await app.LaunchAsync()) return true;
+                }
+            }
+        }
+        catch (Exception error) when (error is COMException or UnauthorizedAccessException or InvalidOperationException or
+            IOException or ArgumentException or NotSupportedException)
+        { SessionLog.Write($"NVIDIA package activation failed (0x{error.HResult:X8})."); }
+        return false;
+    }
 
     internal static bool CanEnd(string path) => Path.IsPathFullyQualified(path) && !IsLuma(path) &&
         !path.StartsWith(Windows, StringComparison.OrdinalIgnoreCase);
 
     internal static bool TryEnd(TraySnapshot.Item item)
     {
-        if (!CanEnd(item.Path)) return false;
+        if (!CanEnd(item.Path) || IsNvidiaControlPanel(item)) return false;
         try
         {
             uint pid = Native.WindowProcessId(item.Owner);

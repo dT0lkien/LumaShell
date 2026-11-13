@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -17,6 +16,7 @@ internal sealed class Prism(Preferences settings) : IDisposable
     { Timeout = TimeSpan.FromSeconds(2), MaxResponseContentBufferSize = 1024 * 1024 };
     private bool refreshing;
     private bool changingZapret;
+    private bool opening;
     internal string Status { get; private set; } = "Проверяем Prism…";
     internal Zapret.Mode ZapretStatus { get; private set; }
     internal bool ChangingZapret => changingZapret;
@@ -142,27 +142,30 @@ internal sealed class Prism(Preferences settings) : IDisposable
     internal static bool IsTrayClient(string path) => Path.IsPathFullyQualified(path) &&
         Path.GetFileName(path).Equals("Prism.exe", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsPrismInstallation(string path) => IsTrayClient(path) &&
-        (File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "resources", "app.asar")) ||
-            CoreLocations(path).Any(File.Exists));
-
-    internal static Task<bool?> OpenRunning(string path, nint preferred = 0, bool canElevate = true) =>
-        ActivateRunning(FindRunningWindow(path, preferred), canElevate);
-
-    private static async Task<bool?> ActivateRunning((nint Window, uint Process) running, bool canElevate = true)
+    internal static async Task<bool?> OpenRunning(string? path, nint preferred = 0, Func<string, Task<bool>>? invokeTray = null)
     {
-        var (window, process) = running;
-        if (window == 0 && process == 0) return null;
+        var (window, executable, running) = FindRunningWindow(path, preferred);
+        if (!running) return null;
         if (window != 0 && await Native.FocusWindow(window)) return true;
-        return canElevate && process != 0 && await RequestElevatedActivation(process);
+        if (executable is not null && invokeTray is not null && await invokeTray(executable))
+        {
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                (window, _, _) = FindRunningWindow(executable, 0);
+                if (window != 0 && await Native.FocusWindow(window)) return true;
+                if (attempt < 2) await Task.Delay(100);
+            }
+        }
+        SessionLog.Write("Prism is already running but its window could not be brought forward.");
+        return false;
     }
 
-    private static (nint Window, uint Process) FindRunningWindow(string? path, nint preferred)
+    private static (nint Window, string? Executable, bool Running) FindRunningWindow(string? path, nint preferred)
     {
-        if (preferred != 0 && path is not null && string.Equals(Native.Executable(preferred), path, StringComparison.OrdinalIgnoreCase))
-            return (preferred, Native.WindowProcessId(preferred));
         using var current = Process.GetCurrentProcess();
-        uint mainProcess = 0;
+        string? executable = null;
+        nint fallbackWindow = 0;
+        bool running = false;
         foreach (var process in Process.GetProcessesByName("Prism"))
         {
             using (process)
@@ -170,16 +173,22 @@ internal sealed class Prism(Preferences settings) : IDisposable
                 try
                 {
                     uint pid = (uint)process.Id;
-                    if (process.SessionId != current.SessionId || Native.ProcessImage(pid) is not { } image ||
-                        path is not null && !string.Equals(image, path, StringComparison.OrdinalIgnoreCase)) continue;
-                    if (FindWindow(image, pid) is var window && window != 0) return (window, pid);
-                    if (process.MainWindowHandle is var main && main != 0) return (main, pid);
-                    if (mainProcess == 0) mainProcess = pid;
+                    if (process.SessionId != current.SessionId) continue;
+                    running = true;
+                    if (Native.ProcessImage(pid) is not { } candidate || !IsTrayClient(candidate)) continue;
+                    executable ??= candidate;
+                    nint window = preferred != 0 && Native.WindowProcessId(preferred) == pid ? preferred : FindWindow(candidate, pid);
+                    if (window == 0) window = process.MainWindowHandle;
+                    if (window == 0) continue;
+                    if (path is null || path.Equals(candidate, StringComparison.OrdinalIgnoreCase))
+                        return (window, candidate, true);
+                    fallbackWindow = window;
+                    executable = candidate;
                 }
                 catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
             }
         }
-        return (0, mainProcess);
+        return (fallbackWindow, executable ?? path, running);
     }
 
     private static nint FindWindow(string path, uint process)
@@ -188,45 +197,6 @@ internal sealed class Prism(Preferences settings) : IDisposable
             foreach (string className in new[] { "Chrome_WidgetWin_1", "Chrome_WidgetWin_0" })
                 if (Native.FindTitledWindow(path, className, title, process) is var window && window != 0) return window;
         return Native.FindTitledWindow(path, "Chrome_WidgetWin_1", null, process);
-    }
-
-    private static async Task<bool> RequestElevatedActivation(uint processId)
-    {
-        if (processId == 0 || Worker.Executable is not { } luma) return false;
-        try
-        {
-            if (Native.ProcessImage(processId) is not { } path || !IsPrismInstallation(path)) return false;
-            long started = Native.ProcessCreationTime(processId);
-            if (started == 0) return false;
-            var start = new ProcessStartInfo(luma) { UseShellExecute = true, Verb = "runas" };
-            start.ArgumentList.Add("--show-prism");
-            start.ArgumentList.Add(processId.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            start.ArgumentList.Add(started.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            using var helper = Process.Start(start);
-            if (helper is null) return false;
-            Native.AllowSetForegroundWindow((uint)helper.Id);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-            await helper.WaitForExitAsync(timeout.Token);
-            return helper.ExitCode == 0;
-        }
-        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or OperationCanceledException)
-        { return false; }
-    }
-
-    internal static bool ActivateElevated(uint processId, long started)
-    {
-        try
-        {
-            using var prism = Process.GetProcessById(checked((int)processId));
-            using var current = Process.GetCurrentProcess();
-            if (prism.SessionId != current.SessionId || started == 0 || Native.ProcessCreationTime(processId) != started ||
-                Native.ProcessImage(processId) is not { } path || !IsPrismInstallation(path)) return false;
-            nint window = FindWindow(path, processId);
-            if (window == 0) window = prism.MainWindowHandle;
-            return window != 0 && Native.WindowProcessId(window) == processId && Native.FocusWindow(window).GetAwaiter().GetResult();
-        }
-        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or OverflowException)
-        { return false; }
     }
 
     private static async Task<Endpoint?> ReadConnection(string folder)
@@ -268,7 +238,15 @@ internal sealed class Prism(Preferences settings) : IDisposable
 
     internal async void Open()
     {
-        if (await ActivateRunning(FindRunningWindow(null, 0)) is { } opened)
+        if (opening) return;
+        opening = true;
+        try { await OpenClient(); }
+        finally { opening = false; }
+    }
+
+    private async Task OpenClient()
+    {
+        if (await OpenRunning(null, invokeTray: InvokeTray) is { } opened)
         {
             if (!opened) Feedback?.Invoke("Windows не удалось вывести окно Prism");
             return;
@@ -289,6 +267,8 @@ internal sealed class Prism(Preferences settings) : IDisposable
         if (picker.ShowDialog() == true && !Desktop.Launch(picker.FileName))
             Feedback?.Invoke("Windows не удалось запустить Prism");
     }
+
+    internal Func<string, Task<bool>>? InvokeTray { get; set; }
 
     public void Dispose() => client.Dispose();
 }

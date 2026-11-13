@@ -49,12 +49,7 @@ internal static class Worker
 
     internal static bool Handle(string[] args)
     {
-        if (args.Length > 0 && args[0] == "--show-prism")
-        {
-            Environment.ExitCode = args.Length == 3 && uint.TryParse(args[1], out uint target) &&
-                long.TryParse(args[2], out long startedAt) && Prism.ActivateElevated(target, startedAt) ? 0 : 1;
-            return true;
-        }
+        if (args.Length > 0 && args[0] == "--show-prism") return true;
         if (args.Length == 0 || args[0] is not ("--watch-taskbar" or "--watch-session" or "--apply-update")) return false;
         if (args.Length < 4 || !int.TryParse(args[1], out int pid) || !long.TryParse(args[2], out long started)) return true;
         using var parent = FindParent(pid, started);

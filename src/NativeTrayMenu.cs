@@ -12,12 +12,13 @@ internal static class NativeTrayMenu
     internal static nint ShowContextMenu(TraySnapshot.Item item, Point anchor)
     {
         var placement = new ClassicMenuAnchor(item, anchor);
-        TryActivate(item, placement);
+        TryActivate(item, placement, anchor);
         return placement.Menu;
     }
 
-    internal static bool Invoke(TraySnapshot.Item item) => TryActivate(item, null);
+    internal static bool Invoke(TraySnapshot.Item item, Point anchor) => TryActivate(item, null, anchor);
     internal static bool IsMenuOpen(nint menu) => menu != 0 && IsWindowVisible(menu);
+    internal static Point CursorPosition() => GetCursorPos(out var cursor) ? new Point(cursor.X, cursor.Y) : new Point();
     internal static bool IsNativeSurface(nint window)
     {
         var name = new System.Text.StringBuilder(64);
@@ -26,7 +27,7 @@ internal static class NativeTrayMenu
                 "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow";
     }
 
-    private static bool TryActivate(TraySnapshot.Item item, ClassicMenuAnchor? context)
+    private static bool TryActivate(TraySnapshot.Item item, ClassicMenuAnchor? context, Point anchor)
     {
         object? automation = null;
         var candidates = new List<(IUIAutomationElement Element, bool Exact, nint Surface)>();
@@ -49,7 +50,8 @@ internal static class NativeTrayMenu
             overflow = OverflowWindow();
             bool positioned = TryIconBounds(item, out var iconBounds);
             FindMatches(client, primary, false, item.Title, positioned ? iconBounds : null, candidates);
-            if (!candidates.Exists(candidate => candidate.Exact) && (overflow == 0 || !IsWindowVisible(overflow)))
+            bool exactPrimary = candidates.Exists(candidate => candidate.Exact);
+            if (!exactPrimary && (overflow == 0 || !IsWindowVisible(overflow)))
             {
                 openedOverflow = OpenOverflow(client, primary);
                 overflow = OverflowWindow();
@@ -59,17 +61,17 @@ internal static class NativeTrayMenu
                 if (openedOverflow && GetWindowRect(overflow, out original))
                 {
                     // Move a temporary overflow beside the Luma tray while Explorer handles the click.
-                    var area = WorkingArea(context?.Anchor ?? new Point(original.Left, original.Top));
+                    var area = WorkingArea(anchor);
                     int width = original.Right - original.Left;
                     if (width > 0)
                     {
-                        int left = context is null ? System.Windows.Forms.SystemInformation.VirtualScreen.Left - width - 64 :
-                            Math.Clamp((int)context.Anchor.X - width - 10, area.Left, Math.Max(area.Left, area.Right - width));
-                        SetWindowPos(overflow, 0, left, area.Top + 35, 0, 0, 0x15);
+                        int left = Math.Clamp((int)anchor.X - width - 10, area.Left, Math.Max(area.Left, area.Right - width));
+                        int top = Math.Clamp((int)anchor.Y, area.Top, Math.Max(area.Top, area.Bottom - (original.Bottom - original.Top)));
+                        SetWindowPos(overflow, 0, left, top, 0, 0, 0x15);
                     }
                     Thread.Sleep(90);
                 }
-                if (!candidates.Exists(candidate => candidate.Exact))
+                if (!exactPrimary)
                 {
                     positioned = TryIconBounds(item, out iconBounds);
                     FindMatches(client, overflow, true, item.Title, positioned ? iconBounds : null, candidates);
@@ -85,7 +87,7 @@ internal static class NativeTrayMenu
             if (context is not null)
             {
                 // An actual Explorer click invokes the icon callback, including for elevated apps.
-                if (!ClickElement(client, element, surface))
+                if (!ClickElement(client, element, surface, right: true))
                 {
                     if (element is not IUIAutomationElement3 menu) return false;
                     menu.ShowContextMenu();
@@ -93,7 +95,7 @@ internal static class NativeTrayMenu
                 // UI Automation can return success for a parent menu. Only accept the target app's menu.
                 return context.WaitForMenu();
             }
-            if (!InvokePrimary(element)) return false;
+            if (!ClickElement(client, element, surface, right: false) && !InvokePrimary(element)) return false;
             if (openedOverflow) Thread.Sleep(180);
             return true;
         }
@@ -113,7 +115,7 @@ internal static class NativeTrayMenu
         }
     }
 
-    private static bool ClickElement(IUIAutomation client, IUIAutomationElement element, nint surface)
+    private static bool ClickElement(IUIAutomation client, IUIAutomationElement element, nint surface, bool right)
     {
         if (!IsWindowVisible(surface)) return false;
         var rect = element.CurrentBoundingRectangle;
@@ -150,7 +152,7 @@ internal static class NativeTrayMenu
         try
         {
             hitWindow = WindowFromPoint(center);
-            return (hitWindow == surface || IsChild(surface, hitWindow)) && RightClick();
+            return (hitWindow == surface || IsChild(surface, hitWindow)) && SendClick(right);
         }
         finally
         {
@@ -160,10 +162,11 @@ internal static class NativeTrayMenu
         }
     }
 
-    private static bool RightClick()
+    private static bool SendClick(bool right)
     {
-        var press = new MouseEvent { Data = new MouseData { Flags = 0x0008 } };
-        var release = new MouseEvent { Data = new MouseData { Flags = 0x0010 } };
+        uint down = right ? 0x0008u : 0x0002u;
+        var press = new MouseEvent { Data = new MouseData { Flags = down } };
+        var release = new MouseEvent { Data = new MouseData { Flags = down << 1 } };
         int size = Marshal.SizeOf<MouseEvent>();
         uint sent = SendInput(2, [press, release], size);
         if (sent == 1) SendInput(1, [release], size);

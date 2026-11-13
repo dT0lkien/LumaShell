@@ -49,6 +49,8 @@ internal sealed class Desktop
     private readonly List<Pin> defaults;
     private readonly Dictionary<string, Pin> installed = new(StringComparer.OrdinalIgnoreCase);
     private List<Native.OpenWindow> windows = [];
+    private readonly Dictionary<string, nint> recentWindows = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<nint, (uint Process, string Id)> appIdentities = [];
     private string[] dynamicPaths = [];
     private nint foreground;
     private nint finderHandle;
@@ -58,6 +60,7 @@ internal sealed class Desktop
     internal bool Interacting => dock.IsMouseOver || DockWindow.IsActive || downloads.IsOpen;
     internal bool UsingNativeTray => trayIcons.UsingNativeTray;
     internal bool TrayIsOpen => trayIcons.IsOpen;
+    internal Task<bool> InvokeTrayIcon(string executable) => trayIcons.InvokeByPath(executable);
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
         Action nativeTray, Action toggleTaskbar, Action update, Updates releases, Action openLauncher, Action toggleWin,
@@ -278,8 +281,11 @@ internal sealed class Desktop
                 var items = Native.OpenWindows();
                 var path = items.FirstOrDefault(item => item.Handle == active)?.Path ??
                     (!Native.IsDesktop(active) ? Native.WindowApp(active) : null);
-                return (Items: items, ActivePath: path);
+                var identities = items.Select(item => (item.Handle, item.Process, Id: Native.WindowApplicationId(item.Handle)))
+                    .Where(item => item.Id is not null).ToDictionary(item => item.Handle, item => (item.Process, item.Id!));
+                return (Items: items, ActivePath: path, Identities: identities);
             });
+            appIdentities = snapshot.Identities;
             ApplyWindows(active, snapshot.Items, snapshot.ActivePath);
         }
         finally { scanningWindows = false; }
@@ -289,14 +295,20 @@ internal sealed class Desktop
     {
         foreground = active;
         windows = snapshot;
+        foreach (string key in recentWindows.Keys.Where(key =>
+            !windows.Any(window => window.Handle == recentWindows[key] && window.Path.Equals(key, StringComparison.OrdinalIgnoreCase))).ToArray())
+            recentWindows.Remove(key);
+        if (active != 0 && path is not null && windows.Any(window => window.Handle == active))
+            recentWindows[path] = active;
         RefreshExplorerFrame();
         activeApp.Text = active != 0 && active == finderHandle ? "Luma Finder" : path is null ? "Проводник" : Installed(path).Label;
-        var visible = windows.Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(path => !defaults.Any(pin => pin.Matches(path)) && !CustomPinMatches(path))
-            .Take(5).ToArray();
-        // Keep the order of open apps stable when their Z order changes.
+        var visible = windows.Where(item => !defaults.Any(pin => pin.Matches(item.Path)) && !CustomPinMatches(item.Path) &&
+                !(appIdentities.TryGetValue(item.Handle, out var app) && app.Process == item.Process &&
+                    settings.Pins.Contains(@"shell:AppsFolder\" + app.Id, StringComparer.OrdinalIgnoreCase)))
+            .Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        // Keep existing Dock slots when another app gains focus.
         var ordered = dynamicPaths.Where(path => visible.Contains(path, StringComparer.OrdinalIgnoreCase))
-            .Concat(visible.Where(path => !dynamicPaths.Contains(path, StringComparer.OrdinalIgnoreCase))).ToArray();
+            .Concat(visible.Where(path => !dynamicPaths.Contains(path, StringComparer.OrdinalIgnoreCase))).Take(5).ToArray();
         if (!dynamicPaths.SequenceEqual(ordered, StringComparer.OrdinalIgnoreCase))
         {
             dynamicPaths = ordered;
@@ -443,7 +455,7 @@ internal sealed class Desktop
         tile.RenderTransformOrigin = new Point(0.5, 1);
         button.PreviewMouseRightButtonUp += (_, args) =>
         {
-            var entries = windows.Where(item => pin.Matches(item.Path)).Take(8)
+            var entries = windows.Where(item => MatchesWindow(pin, item)).Take(8)
                 .Select(item => (Control)Entry(Label(item.Title, 58), async () => await Activate(pin, item))).ToList();
             entries.Add(pin.Arguments == "shell:Downloads" ? Entry("Открыть в Finder", () => OpenPin(pin))
                 : Entry("Открыть", async () => await Activate(pin)));
@@ -566,19 +578,28 @@ internal sealed class Desktop
                 return newWindow;
             }
 
-            var matches = windows.Where(item => pin.Matches(item.Path) && Native.WindowMatches(item)).ToArray();
-            var match = selected ?? matches.FirstOrDefault();
+            var match = selected is not null && Native.WindowMatches(selected) ? selected :
+                windows.Where(item => MatchesWindow(pin, item) && Native.WindowMatches(item))
+                    .OrderByDescending(item => recentWindows.TryGetValue(item.Path, out nint window) && window == item.Handle).FirstOrDefault();
             string executable = pin.Location ?? pin.Target;
-            if (Prism.IsTrayClient(executable) &&
-                await Prism.OpenRunning(executable, match?.Handle ?? 0) is { } prismOpened)
+            if (Launcher.IsPrismTarget(pin.Target, executable) &&
+                await Prism.OpenRunning(Prism.IsTrayClient(executable) ? executable : null,
+                    match?.Handle ?? 0, InvokeTrayIcon) is { } prismOpened)
             {
-                if (!prismOpened) feedback.Text = "Windows не удалось вывести окно Prism";
+                if (!prismOpened) feedback.Text = "Prism запущен. Открой окно через значок Windows.";
                 return false;
             }
+            if (match is null)
+                match = await Task.Run(() => Native.OpenWindows().FirstOrDefault(item => pin.Matches(item.Path) ||
+                    Launcher.IsShellApp(pin.Target) && Native.WindowApplicationId(item.Handle) is { } id &&
+                    pin.Target.Equals(@"shell:AppsFolder\" + id, StringComparison.OrdinalIgnoreCase)));
             if (match is not null)
             {
                 if (!Native.WindowMatches(match) || !await Native.FocusWindow(match.Handle))
+                {
                     feedback.Text = "Windows не удалось вывести окно приложения";
+                    SessionLog.Write($"Could not bring forward a Dock window for {Path.GetFileName(match.Path)}.");
+                }
                 return false;
             }
             bool opened = OpenPin(pin);
@@ -601,12 +622,16 @@ internal sealed class Desktop
         foreach (var (pin, dot) in indicators)
         {
             bool finder = finderHandle != 0 && pin.Target == "explorer.exe" && pin.Arguments == "";
-            bool running = finder || windows.Any(item => pin.Matches(item.Path));
+            bool running = finder || windows.Any(item => MatchesWindow(pin, item));
             dot.Visibility = running ? Visibility.Visible : Visibility.Hidden;
-            bool active = finder && foreground == finderHandle || windows.Any(item => item.Handle == foreground && pin.Matches(item.Path));
+            bool active = finder && foreground == finderHandle || windows.Any(item => item.Handle == foreground && MatchesWindow(pin, item));
             dot.Opacity = active ? 1 : 0.62;
         }
     }
+
+    private bool MatchesWindow(Pin pin, Native.OpenWindow window) => pin.Matches(window.Path) ||
+        appIdentities.TryGetValue(window.Handle, out var app) && app.Process == window.Process &&
+        pin.Target.Equals(@"shell:AppsFolder\" + app.Id, StringComparison.OrdinalIgnoreCase);
 
     private void MovePointer(double? x)
     {

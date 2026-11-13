@@ -37,6 +37,8 @@ internal sealed class Launcher
     private AppEntry[]? catalog;
     private ContextMenu? context;
     private bool loading;
+    private bool launching;
+    internal Func<string, Task<bool>>? InvokeTray { get; init; }
 
     internal Launcher(Action openFinder, Action<string> reveal, Func<AppEntry, bool> isPinned, Func<AppEntry, string?> togglePin)
     {
@@ -276,8 +278,9 @@ internal sealed class Launcher
         if (results.SelectedItem is ListBoxItem { Tag: AppEntry item }) Run(item);
     }
 
-    private void Run(AppEntry item)
+    private async void Run(AppEntry item)
     {
+        if (launching) return;
         if (OpensFinder(item.Target))
         {
             Remember(item);
@@ -285,12 +288,20 @@ internal sealed class Launcher
             openFinder();
             return;
         }
-        if (LaunchTarget(item.Target))
+        launching = true;
+        try
         {
-            Remember(item);
-            Close();
+            if (IsPrismTarget(item.Target, item.Location) &&
+                await Prism.OpenRunning(Prism.IsTrayClient(item.Location ?? "") ? item.Location : null, invokeTray: InvokeTray) is { } opened)
+            {
+                if (opened) { Remember(item); Close(); }
+                else status.Text = "Prism запущен, но его окно недоступно";
+                return;
+            }
+            if (LaunchTarget(item.Target)) { Remember(item); Close(); }
+            else status.Text = "Windows не удалось открыть приложение";
         }
-        else status.Text = "Windows не удалось открыть приложение";
+        finally { launching = false; }
     }
 
     private void Remember(AppEntry app)
@@ -302,6 +313,12 @@ internal sealed class Launcher
 
     internal static bool LaunchTarget(string target) => IsShellApp(target)
         ? Desktop.Launch("explorer.exe", $"\"{target}\"") : Desktop.Launch(target);
+
+    internal static bool IsPrismTarget(string target, string? location) => Prism.IsTrayClient(target) ||
+        location is not null && Prism.IsTrayClient(location) ||
+        target.EndsWith(@"\com.prism.vpn", StringComparison.OrdinalIgnoreCase) ||
+        Path.GetFileName(target).Equals("Prism.lnk", StringComparison.OrdinalIgnoreCase) ||
+        location is not null && Path.GetFileName(location).Equals("Prism.lnk", StringComparison.OrdinalIgnoreCase);
 
     internal static bool OpensFinder(string target) =>
         target.Equals(@"shell:AppsFolder\Microsoft.Windows.Explorer", StringComparison.OrdinalIgnoreCase) ||

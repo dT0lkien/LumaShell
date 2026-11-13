@@ -161,6 +161,7 @@ internal sealed class TrayIcons
             row.Children.Add(icon);
             row.Children.Add(Text(item.Title, 12));
             var button = Button(row, item.Title, () => ActivateIcon(item), Paint("#5720262F"));
+            button.Tag = item;
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             button.Margin = new Thickness(0, 0, 0, 4);
             button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; OpenContext(item, button); };
@@ -189,25 +190,28 @@ internal sealed class TrayIcons
         openingWindow = true;
         try
         {
-            var window = Native.OpenWindows().FirstOrDefault(candidate => candidate.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase));
-            bool opened;
-            if (Prism.IsTrayClient(item.Path))
-            {
-                nint preferred = window?.Handle ?? 0;
-                opened = await Prism.OpenRunning(item.Path, preferred, canElevate: false) == true;
-                if (!opened && popup.IsOpen)
-                {
-                    await InvokeIcon(item);
-                    opened = await Prism.OpenRunning(item.Path, preferred, canElevate: false) == true;
-                }
-                if (!opened) opened = await Prism.OpenRunning(item.Path, preferred) == true;
-            }
-            else opened = window is not null && await Native.FocusWindow(window.Handle);
+            bool opened = await TryOpenWindow(item);
             if (opened)
                 popup.IsOpen = false;
-            else SetStatus("Не удалось открыть окно");
+            else
+            {
+                if (popup.IsOpen && entries.Children.OfType<Button>().FirstOrDefault(button => Equals(button.Tag, item)) is { } row &&
+                    (selected is null || selected.Key != item.Key)) ShowActions(item, row);
+                SetStatus(TrayAppActions.IsNvidiaControlPanel(item) ?
+                    "Панель управления NVIDIA не открылась" : "Не удалось открыть окно");
+            }
         }
         finally { openingWindow = false; }
+    }
+
+    private async Task<bool> TryOpenWindow(TraySnapshot.Item item)
+    {
+        if (TrayAppActions.IsNvidiaControlPanel(item))
+            return await TrayAppActions.OpenNvidiaControlPanel() || await InvokeIcon(item);
+        if (Prism.IsTrayClient(item.Path))
+            return await Prism.OpenRunning(item.Path, invokeTray: _ => InvokeIcon(item)) == true;
+        var window = Native.OpenWindows().FirstOrDefault(candidate => candidate.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase));
+        return window is not null && await Native.FocusWindow(window.Handle);
     }
 
     private void ShowActions(TraySnapshot.Item item, FrameworkElement row)
@@ -238,10 +242,12 @@ internal sealed class TrayIcons
             AddAction("Выйти из Luma", exitLuma);
             return;
         }
-        AddAction(Prism.IsTrayClient(item.Path) ? "Открыть Prism" : "Открыть окно", async () => await OpenWindow(item));
+        bool nvidia = TrayAppActions.IsNvidiaControlPanel(item);
+        string open = nvidia ? "Панель управления NVIDIA" : Prism.IsTrayClient(item.Path) ? "Открыть Prism" : "Открыть окно";
+        AddAction(open, async () => await OpenWindow(item));
         AddAction("Родное меню значка", () => OpenContext(item, null));
         AddAction("Показать трей Windows", OpenWindowsTray);
-        if (TrayAppActions.CanEnd(item.Path)) AddAction("Завершить приложение…", () => ConfirmEnd(item));
+        if (!nvidia && TrayAppActions.CanEnd(item.Path)) AddAction("Завершить приложение…", () => ConfirmEnd(item));
     }
 
     private void ConfirmEnd(TraySnapshot.Item item)
@@ -303,7 +309,7 @@ internal sealed class TrayIcons
     private async void ActivateIcon(TraySnapshot.Item item)
     {
         if (busy) return;
-        if (Prism.IsTrayClient(item.Path))
+        if (Prism.IsTrayClient(item.Path) || TrayAppActions.IsNvidiaControlPanel(item))
         {
             await OpenWindow(item);
             return;
@@ -312,12 +318,33 @@ internal sealed class TrayIcons
         else if (popup.IsOpen) await OpenWindow(item);
     }
 
+    internal async Task<bool> InvokeByPath(string executable)
+    {
+        if (busy || nativeMenu != 0) return false;
+        var matches = snapshot.Where(item => item.Path.Equals(executable, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (matches.Length == 1 && await InvokeIcon(matches[0])) return true;
+        if (matches.Length > 1) return false;
+        var refreshed = await Task.Run(() => TraySnapshot.Read().Where(item =>
+            item.Path.Equals(executable, StringComparison.OrdinalIgnoreCase)).ToArray());
+        if (refreshed.Length == 1 && (matches.Length == 0 || refreshed[0].Key != matches[0].Key ||
+            refreshed[0].Title != matches[0].Title))
+            return await InvokeIcon(refreshed[0]);
+        return false;
+    }
+
     private async Task<bool> InvokeIcon(TraySnapshot.Item item)
     {
-        if (busy) return false;
+        if (busy || nativeMenu != 0) return false;
         busy = true;
         popup.StaysOpen = true;
-        try { return await Task.Run(() => NativeTrayMenu.Invoke(item)); }
+        try
+        {
+            Point anchor = popup.IsOpen ? trayPanel.PointToScreen(new Point()) :
+                toggle.IsVisible ? toggle.PointToScreen(new Point(0, toggle.ActualHeight + 7)) : NativeTrayMenu.CursorPosition();
+            bool sent = await Task.Run(() => NativeTrayMenu.Invoke(item, anchor));
+            if (!sent) SessionLog.Write($"Tray action unavailable for {Path.GetFileName(item.Path)}.");
+            return sent;
+        }
         finally { popup.StaysOpen = false; busy = false; }
     }
 

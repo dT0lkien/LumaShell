@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Expression = System.Linq.Expressions.Expression;
@@ -63,6 +64,7 @@ internal static class FinderPreview
             VerifyShellMenu(assembly, desktop, sandbox);
             VerifyLauncherMenu(assembly, Path.Combine(sandbox, "Sample.exe"));
             VerifyTrayActions(assembly);
+            VerifyAppIdentification(assembly, sandbox);
             VerifyHiddenWindow(assembly);
             VerifyFolderShortcut(assembly);
 
@@ -93,6 +95,53 @@ internal static class FinderPreview
             window.Close();
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
+        }
+    }
+
+    private static void VerifyAppIdentification(Assembly assembly, string sandbox)
+    {
+        const BindingFlags internalStatic = BindingFlags.Static | BindingFlags.NonPublic;
+        var actions = assembly.GetType("LumaShell.TrayAppActions", throwOnError: true)!;
+        var panel = actions.GetMethod("IsNvidiaControlPanel", internalStatic, null, [typeof(string), typeof(string)], null)!;
+        bool Nvidia(string path, string title) => (bool)panel.Invoke(null, [path, title])!;
+        if (!Nvidia(@"C:\Windows\System32\DriverStore\NVDisplay.Container.exe", "NVIDIA Settings") ||
+            !Nvidia(@"C:\NVIDIA\nvtray.exe", "NVIDIA") ||
+            !Nvidia("", "Панель управления NVIDIA") ||
+            Nvidia(@"C:\NVIDIA\nvcontainer.exe", "NVIDIA App") ||
+            Nvidia(@"C:\Another App\helper.exe", "Control Panel"))
+            throw new InvalidOperationException("NVIDIA tray identification included the wrong process or missed the Control Panel.");
+        var launcher = assembly.GetType("LumaShell.Launcher", throwOnError: true)!;
+        var prism = launcher.GetMethod("IsPrismTarget", internalStatic)!;
+        bool Prism(string target, string? location = null) => (bool)prism.Invoke(null, [target, location])!;
+        if (!Prism(@"C:\Prism\Prism.exe") || !Prism(@"shell:AppsFolder\com.prism.vpn") ||
+            !Prism(@"C:\Start Menu\Prism.lnk") ||
+            !Prism(@"shell:AppsFolder\different-catalog-id", @"C:\Prism\Prism.exe") ||
+            Prism(@"C:\Prism Launcher\prismlauncher.exe"))
+            throw new InvalidOperationException("Prism identification missed a Dock or launcher entry.");
+        Console.WriteLine("The tray identifies NVIDIA Control Panel separately from NVIDIA App, and recognizes Prism shortcuts.");
+
+        string probe = Path.Combine(sandbox, "Prism.exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "ping.exe"), probe);
+        using var process = Process.Start(new ProcessStartInfo(probe, "-n 30 127.0.0.1")
+        {
+            UseShellExecute = false, CreateNoWindow = true
+        }) ?? throw new InvalidOperationException("Could not start the windowless Prism probe.");
+        try
+        {
+            var type = assembly.GetType("LumaShell.Prism", throwOnError: true)!;
+            var open = type.GetMethod("OpenRunning", internalStatic)!;
+            string? forwarded = null;
+            Func<string, Task<bool>> tray = path => { forwarded = path; return Task.FromResult(false); };
+            var result = (Task<bool?>)open.Invoke(null, [probe, (nint)0, tray])!;
+            PumpUntil(() => result.IsCompleted, "checking a running Prism without a window");
+            if (result.GetAwaiter().GetResult() != false || !string.Equals(probe, forwarded, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("A running Prism without a window did not take the tray path.");
+            Console.WriteLine("A windowless Prism process used the tray callback without starting a second copy.");
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill();
+            process.WaitForExit();
         }
     }
 
