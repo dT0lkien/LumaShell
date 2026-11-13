@@ -390,6 +390,49 @@ internal sealed class FinderWindow : Window
             if (RowUnder(args.OriginalSource) is not null) ShowSelectedMenu(list.PointToScreen(args.GetPosition(list)));
             else ShowBackgroundMenu();
         };
+        list.AllowDrop = true;
+        list.DragOver += (_, args) =>
+        {
+            args.Effects = DragTarget(args) is { } target && DropPaths(args, target).Length != 0
+                ? DropEffect(args) : DragDropEffects.None;
+            args.Handled = true;
+        };
+        list.Drop += async (_, args) =>
+        {
+            args.Handled = true;
+            if (DragTarget(args) is not { } target || DropPaths(args, target) is not { Length: > 0 } paths) return;
+            args.Effects = DropEffect(args);
+            if (args.Effects != DragDropEffects.None)
+                await TransferFiles(paths, target, args.Effects == DragDropEffects.Move);
+        };
+    }
+
+    private string? DragTarget(DragEventArgs args) => !copying && args.Data.GetDataPresent(DataFormats.FileDrop)
+        ? RowUnder(args.OriginalSource) is { Content: FinderEntry { IsDirectory: true } item } ? item.Path : folder
+        : null;
+
+    private static string[] DropPaths(DragEventArgs args, string target)
+    {
+        try
+        {
+            if (args.Data.GetData(DataFormats.FileDrop) is not string[] paths) return [];
+            string destination = Path.TrimEndingDirectorySeparator(target);
+            return paths.Where(Path.IsPathFullyQualified).Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)))
+                .Where(path => !destination.Equals(path, StringComparison.OrdinalIgnoreCase) &&
+                    !destination.StartsWith(Path.EndsInDirectorySeparator(path) ? path : path + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(Path.GetDirectoryName(path), destination, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or ExternalException) { return []; }
+    }
+
+    private static DragDropEffects DropEffect(DragEventArgs args)
+    {
+        if ((args.KeyStates & DragDropKeyStates.ShiftKey) != 0 && (args.AllowedEffects & DragDropEffects.Move) != 0)
+            return DragDropEffects.Move;
+        if ((args.AllowedEffects & DragDropEffects.Copy) != 0) return DragDropEffects.Copy;
+        return args.AllowedEffects & DragDropEffects.Move;
     }
 
     private ListViewItem? RowUnder(object source) => source is DependencyObject visual
@@ -801,6 +844,11 @@ internal sealed class FinderWindow : Window
         }
         catch (ExternalException) { status.Text = "Буфер обмена занят"; return; }
         if (paths.Length == 0) return;
+        await TransferFiles(paths, target, move, sequence);
+    }
+
+    private async Task TransferFiles(string[] paths, string target, bool move, uint sequence = 0)
+    {
         copying = true;
         status.Text = move ? "Перемещаем файлы…" : "Копируем файлы…";
         try
@@ -811,7 +859,7 @@ internal sealed class FinderWindow : Window
                 try { Clipboard.Clear(); }
                 catch (ExternalException) { }
             }
-            if (!closed && folder == target)
+            if (!closed)
             {
                 if (copied) Reload();
                 else status.Text = move ? "Перемещение не завершено" : "Копирование не завершено";

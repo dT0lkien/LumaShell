@@ -76,6 +76,7 @@ internal static class FinderPreview
             var preview = application.Windows.OfType<Window>().Single(candidate => candidate.Owner == window);
             PumpUntil(() => Find<TextBox>(preview, box => box.IsReadOnly && box.Text == "Luma") is not null, "rendering Quick Look");
             preview.Close();
+            VerifyPdfPreview(assembly, window, projects, list);
             open.Invoke(window, [desktop]);
             PumpUntil(() => list.Items.Count == files.Length + 2, "returning to the Finder preview folder");
 
@@ -96,6 +97,63 @@ internal static class FinderPreview
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
         }
+    }
+
+    private static void VerifyPdfPreview(Assembly assembly, Window finder, string folder, ListView list)
+    {
+        const BindingFlags instance = BindingFlags.Instance | BindingFlags.NonPublic;
+        string path = Path.Combine(folder, "Две страницы.pdf");
+        using (var file = File.Create(path))
+        using (var writer = new StreamWriter(file, Encoding.ASCII, leaveOpen: true))
+        {
+            writer.NewLine = "\n";
+            writer.WriteLine("%PDF-1.4");
+            var objects = new[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 420] /Resources << >> /Contents 5 0 R >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 420] /Resources << >> /Contents 6 0 R >>",
+                "<< /Length 26 >>\nstream\n0 0 1 rg 30 30 240 360 re f\nendstream",
+                "<< /Length 26 >>\nstream\n1 0 0 rg 30 30 240 360 re f\nendstream"
+            };
+            long[] offsets = new long[objects.Length];
+            for (int i = 0; i < objects.Length; i++)
+            {
+                writer.Flush();
+                offsets[i] = file.Position;
+                writer.WriteLine($"{i + 1} 0 obj\n{objects[i]}\nendobj");
+            }
+            writer.Flush();
+            long crossReference = file.Position;
+            writer.WriteLine($"xref\n0 {objects.Length + 1}\n0000000000 65535 f ");
+            foreach (long offset in offsets) writer.WriteLine($"{offset:0000000000} 00000 n ");
+            writer.WriteLine($"trailer\n<< /Size {objects.Length + 1} /Root 1 0 R >>\nstartxref\n{crossReference}\n%%EOF");
+        }
+        var type = finder.GetType();
+        type.GetMethod("Reload", instance)!.Invoke(finder, null);
+        PumpUntil(() => list.Items.Count == 2, "reading the PDF fixture");
+        type.GetMethod("Reveal", instance)!.Invoke(finder, [path]);
+        type.GetMethod("ToggleQuickLook", instance)!.Invoke(finder, null);
+        var preview = Application.Current.Windows.OfType<Window>().Single(window => window.Owner == finder);
+        try
+        {
+            PumpUntil(() => Find<Image>(preview, image => image.Source is BitmapSource) is not null &&
+                Find<TextBlock>(preview, label => label.Text == "1 / 2") is not null, "rendering the first PDF page");
+            var first = Find<Image>(preview, image => image.Source is BitmapSource)!.Source;
+            var next = Find<Button>(preview, button => AutomationProperties.GetName(button) == "Следующая страница")!;
+            PumpUntil(() => next.IsEnabled, "enabling PDF pagination");
+            next.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            PumpUntil(() => Find<Image>(preview, image => image.Source is BitmapSource source && !ReferenceEquals(source, first)) is not null &&
+                Find<TextBlock>(preview, label => label.Text == "2 / 2") is not null, "rendering the second PDF page");
+        }
+        finally { preview.Close(); }
+        var files = assembly.GetType("LumaShell.FinderFiles", throwOnError: true)!;
+        var data = (DataObject)files.GetMethod("FileDropData", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [new[] { path }])!;
+        if (data.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length != 1 || paths[0] != path)
+            throw new InvalidOperationException("The Downloads stack did not publish a file-drop payload.");
+        Console.WriteLine("Quick Look rendered two PDF pages, and the Downloads drag payload carried the original file path.");
     }
 
     private static void VerifyAppIdentification(Assembly assembly, string sandbox)

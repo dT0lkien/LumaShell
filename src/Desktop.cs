@@ -21,6 +21,7 @@ internal sealed class Desktop
     internal const int BarHeight = 30;
     private const double IconSize = 56;
     private const double SlotSize = IconSize + 8;
+    private const string BrowserLink = "https://www.bing.com/";
     private readonly TextBlock activeApp = Text("Проводник", 13, bold: true);
     private readonly TextBlock feedback = Text("", 12, Blue);
     private readonly StackPanel dockRow = new() { Orientation = Orientation.Horizontal };
@@ -37,6 +38,7 @@ internal sealed class Desktop
     private readonly ScaleTransform glassWidth = new();
     private readonly Popup downloads = new() { Placement = PlacementMode.Top, StaysOpen = false, AllowsTransparency = true };
     private CancellationTokenSource? loadingDownloads;
+    private QuickLook? downloadPreview;
     private readonly Action openLauncher;
     private readonly Action<string?> openFinder;
     private double? hoverX;
@@ -47,6 +49,8 @@ internal sealed class Desktop
     private double targetGlassWidth = 1;
     private bool dockVisible;
     private readonly List<Pin> defaults;
+    private Pin browser = new("Браузер по умолчанию", BrowserLink, "", [], "#FF596E87", "#FF303A48",
+        "M18,10 A8,8 0 1 1 2,10 A8,8 0 1 1 18,10 M2,10 H18 M10,2 C5,5 5,15 10,18 M10,2 C15,5 15,15 10,18");
     private readonly Dictionary<string, Pin> installed = new(StringComparer.OrdinalIgnoreCase);
     private List<Native.OpenWindow> windows = [];
     private readonly Dictionary<string, nint> recentWindows = new(StringComparer.OrdinalIgnoreCase);
@@ -57,7 +61,7 @@ internal sealed class Desktop
 
     internal Window MenuBar { get; } = Overlay("Luma • Строка меню", 800, BarHeight);
     internal Window DockWindow { get; } = Overlay("Luma • Dock", 1120, 145);
-    internal bool Interacting => dock.IsMouseOver || DockWindow.IsActive || downloads.IsOpen;
+    internal bool Interacting => dock.IsMouseOver || DockWindow.IsActive || downloads.IsOpen || downloadPreview is not null;
     internal bool UsingNativeTray => trayIcons.UsingNativeTray;
     internal bool TrayIsOpen => trayIcons.IsOpen;
     internal Task<bool> InvokeTrayIcon(string executable) => trayIcons.InvokeByPath(executable);
@@ -120,7 +124,7 @@ internal sealed class Desktop
         [
             new("Проводник", "explorer.exe", "", ["explorer.exe"], "#FF80E3FF", "#FF1360DA", "M2,3 L18,3 L18,17 L2,17 Z M8,3 Q10,8 8,12 M5,8 L5,9 M14,8 L14,9 M5,13 Q10,16 15,12"),
             new("Приложения", "explorer.exe", "shell:AppsFolder", [], "#FFE4E9F4", "#FF687388", "M2,3 H7 V8 H2 Z M12,3 H17 V8 H12 Z M2,12 H7 V17 H2 Z M12,12 H17 V17 H12 Z"),
-            new("Браузер", "https://www.bing.com/", "", ["msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe"], "#FF68DFFF", "#FF185CD2", "M18,10 A8,8 0 1 1 2,10 A8,8 0 1 1 18,10 M6,14 L8.5,8.5 L14,6 L11.5,11.5 Z"),
+            browser,
             new("Блокнот", "notepad.exe", "", ["notepad.exe"], "#FFFFC653", "#FFE69A37", "M4,3 L16,3 L16,17 L4,17 Z M7,7 L13,7 M7,10 L13,10 M7,13 L11,13"),
             new("Терминал", "cmd.exe", "", ["WindowsTerminal.exe", "cmd.exe", "OpenConsole.exe"], "#FF454653", "#FF101118", "M2,4 L18,4 L18,16 L2,16 Z M5,7 L8,10 L5,13 M10,13 L14,13"),
             new("Параметры", "ms-settings:", "", ["SystemSettings.exe"], "#FF9CA5B4", "#FF4D5361", "M10,3 L10,17 M3,10 L17,10 M5,5 L15,15 M15,5 L5,15 M14,10 A4,4 0 1 1 6,10 A4,4 0 1 1 14,10")
@@ -148,7 +152,12 @@ internal sealed class Desktop
             downloads.IsOpen = false;
             ResetIcons();
         };
-        downloads.Closed += (_, _) => loadingDownloads?.Cancel();
+        downloads.Closed += (_, _) =>
+        {
+            var previous = loadingDownloads;
+            loadingDownloads = null;
+            previous?.Cancel();
+        };
         dock.AllowDrop = true;
         dock.DragOver += (_, args) =>
         {
@@ -283,12 +292,22 @@ internal sealed class Desktop
                     (!Native.IsDesktop(active) ? Native.WindowApp(active) : null);
                 var identities = items.Select(item => (item.Handle, item.Process, Id: Native.WindowApplicationId(item.Handle)))
                     .Where(item => item.Id is not null).ToDictionary(item => item.Handle, item => (item.Process, item.Id!));
-                return (Items: items, ActivePath: path, Identities: identities);
+                return (Items: items, ActivePath: path, Identities: identities, Browser: Native.DefaultBrowser());
             });
             appIdentities = snapshot.Identities;
+            UpdateBrowser(snapshot.Browser);
             ApplyWindows(active, snapshot.Items, snapshot.ActivePath);
         }
         finally { scanningWindows = false; }
+    }
+
+    private void UpdateBrowser(string? executable)
+    {
+        if (string.Equals(browser.Location, executable, StringComparison.OrdinalIgnoreCase)) return;
+        int index = defaults.IndexOf(browser);
+        browser = browser with { Location = executable };
+        defaults[index] = browser;
+        dockDirty = true;
     }
 
     private void ApplyWindows(nint active, List<Native.OpenWindow> snapshot, string? path)
@@ -344,7 +363,16 @@ internal sealed class Desktop
         slots.Clear();
         dockRow.Children.Clear();
         indicators.Clear();
-        foreach (var pin in defaults) dockRow.Children.Add(Tile(pin));
+        foreach (var pin in defaults)
+        {
+            if (pin == browser && browser.Location is { } path)
+            {
+                if (CustomPinMatches(path)) continue;
+                var app = Installed(path);
+                dockRow.Children.Add(Tile(browser with { Image = app.Image, Label = app.Label }));
+            }
+            else dockRow.Children.Add(Tile(pin));
+        }
         foreach (var path in settings.Pins.Where(CanPin)) dockRow.Children.Add(Tile(Installed(path), custom: true));
         if (dynamicPaths.Any(path => !CustomPinMatches(path)))
         {
@@ -459,13 +487,14 @@ internal sealed class Desktop
                 .Select(item => (Control)Entry(Label(item.Title, 58), async () => await Activate(pin, item))).ToList();
             entries.Add(pin.Arguments == "shell:Downloads" ? Entry("Открыть в Finder", () => OpenPin(pin))
                 : Entry("Открыть", async () => await Activate(pin)));
-            if (custom)
+            if (custom || pin.Target == BrowserLink && pin.Location is not null)
             {
-                bool pinned = settings.Pins.Contains(pin.Target, StringComparer.OrdinalIgnoreCase);
+                string target = pin.Target == BrowserLink ? pin.Location ?? pin.Target : pin.Target;
+                bool pinned = settings.Pins.Contains(target, StringComparer.OrdinalIgnoreCase);
                 entries.Add(Entry(pinned ? "Открепить" : "Закрепить в Dock", () =>
                 {
-                    if (!pinned) AddPin(pin.Target);
-                    else feedback.Text = RemovePin(pin.Target) ?? "";
+                    if (!pinned) AddPin(target);
+                    else feedback.Text = RemovePin(target) ?? "";
                 }));
             }
             Context(button, entries, PlacementMode.Top).IsOpen = true;
@@ -481,7 +510,7 @@ internal sealed class Desktop
             downloads.IsOpen = false;
             return;
         }
-        const double width = 298;
+        const double width = 328;
         var rows = new StackPanel();
         var pending = Text("Читаем папку…", 12, Muted);
         pending.Margin = new Thickness(6, 5, 0, 6);
@@ -511,17 +540,21 @@ internal sealed class Desktop
         try
         {
             var files = await Task.Run(() => FinderFiles.ReadFolder(folder, request.Token)
-                .OrderByDescending(file => file.Modified).Take(7).ToArray());
+                .OrderByDescending(file => file.Modified).Take(60).ToArray());
             if (request.IsCancellationRequested || loadingDownloads != request) return;
             rows.Children.Clear();
             if (files.Length == 0) rows.Children.Add(Text("Папка пуста", 12, Muted));
             foreach (var file in files)
             {
                 var row = new DockPanel();
-                var image = new Image { Source = file.Icon, Width = 23, Height = 23, Margin = new Thickness(0, 0, 9, 0) };
+                var image = new Image { Source = file.Icon, Width = 32, Height = 32, Margin = new Thickness(0, 0, 9, 0),
+                    Stretch = Stretch.Uniform };
                 DockPanel.SetDock(image, Dock.Left);
                 row.Children.Add(image);
-                row.Children.Add(Text(file.Name, 12));
+                var labels = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                labels.Children.Add(Text(file.Name, 13, bold: true));
+                labels.Children.Add(Text(file.IsDirectory ? file.Kind : $"{file.Kind} · {file.SizeLabel}", 11, Muted));
+                row.Children.Add(labels);
                 var entry = Button(row, file.Name, () =>
                 {
                     downloads.IsOpen = false;
@@ -529,8 +562,19 @@ internal sealed class Desktop
                     else if (!Launch(file.Path)) feedback.Text = "Не удалось открыть загрузку";
                 }, Brushes.Transparent);
                 entry.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+                MakeDownloadDraggable(entry, file);
+                entry.PreviewKeyDown += (_, args) =>
+                {
+                    if (args.Key != Key.Space || Keyboard.Modifiers != ModifierKeys.None) return;
+                    args.Handled = true;
+                    PreviewDownload(file);
+                };
                 rows.Children.Add(entry);
+                if (rows.Children.Count <= 16 && QuickLook.IsImage(file.Extension))
+                    _ = LoadDownloadThumbnail(file, image, frame);
             }
+            if (rows.Children.OfType<Button>().FirstOrDefault() is { } first && !rows.IsKeyboardFocusWithin)
+                first.Focus();
         }
         catch (OperationCanceledException) when (request.IsCancellationRequested) { }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
@@ -540,6 +584,43 @@ internal sealed class Desktop
             if (loadingDownloads == request) loadingDownloads = null;
             request.Dispose();
         }
+    }
+
+    private void PreviewDownload(FinderEntry file)
+    {
+        if (downloadPreview is { } current) current.Close();
+        downloads.IsOpen = false;
+        var preview = new QuickLook(DockWindow, file, openFinder);
+        downloadPreview = preview;
+        preview.Closed += (_, _) => downloadPreview = null;
+        preview.Show();
+    }
+
+    private void MakeDownloadDraggable(Button entry, FinderEntry file)
+    {
+        Point? start = null;
+        entry.PreviewMouseLeftButtonDown += (_, args) => start = args.GetPosition(entry);
+        entry.PreviewMouseLeftButtonUp += (_, _) => start = null;
+        entry.PreviewMouseMove += (_, args) =>
+        {
+            if (start is not { } origin || args.LeftButton != MouseButtonState.Pressed) return;
+            var delta = args.GetPosition(entry) - origin;
+            if (Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+            start = null;
+            args.Handled = true;
+            var payload = FinderFiles.FileDropData(file.Path);
+            if (entry.IsMouseCaptured) entry.ReleaseMouseCapture();
+            downloads.IsOpen = false;
+            try { DragDrop.DoDragDrop(DockWindow, payload, DragDropEffects.Copy | DragDropEffects.Move); }
+            catch (System.Runtime.InteropServices.ExternalException) { feedback.Text = "Не удалось перетащить файл"; }
+        };
+    }
+
+    private async Task LoadDownloadThumbnail(FinderEntry file, Image target, Border frame)
+    {
+        var image = await Task.Run(() => QuickLook.ReadImage(file.Path, 96));
+        if (downloads.IsOpen && ReferenceEquals(downloads.Child, frame) && image is not null) target.Source = image;
     }
 
     private Grid Slot(FrameworkElement element, ScaleTransform? scale = null, TranslateTransform? lift = null)
@@ -560,6 +641,7 @@ internal sealed class Desktop
             return true;
         }
         if (Launcher.IsShellApp(pin.Target)) return Launcher.LaunchTarget(pin.Target);
+        if (pin.Target == BrowserLink && pin.Location is { } browserPath) return Launch(browserPath);
         if (pin.Arguments != "shell:AppsFolder") return Launch(pin.Target, pin.Arguments);
         openLauncher();
         return true;
@@ -578,6 +660,11 @@ internal sealed class Desktop
                 return newWindow;
             }
 
+            // Let a Dock context menu finish releasing mouse and keyboard capture first.
+            await DockWindow.Dispatcher.InvokeAsync(() =>
+            {
+                if (DockWindow.IsVisible) DockWindow.Activate();
+            }, System.Windows.Threading.DispatcherPriority.Input);
             var match = selected is not null && Native.WindowMatches(selected) ? selected :
                 windows.Where(item => MatchesWindow(pin, item) && Native.WindowMatches(item))
                     .OrderByDescending(item => recentWindows.TryGetValue(item.Path, out nint window) && window == item.Handle).FirstOrDefault();

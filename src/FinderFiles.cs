@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Media;
 
 namespace LumaShell;
@@ -96,6 +97,13 @@ internal static class FinderFiles
 
     internal static Task<bool> TransferAsync(nint owner, string[] sources, string target, bool move) =>
         OperateAsync(owner, sources, target, move ? 1u : 2u);
+
+    internal static DataObject FileDropData(params string[] paths)
+    {
+        var data = new DataObject();
+        data.SetData(DataFormats.FileDrop, paths);
+        return data;
+    }
 
     internal static Task<bool> DeleteAsync(nint owner, string[] sources) => OperateAsync(owner, sources, null, 3);
 

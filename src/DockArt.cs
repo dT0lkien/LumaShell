@@ -54,19 +54,9 @@ internal static class DockArt
                             new Rect(12 + index % 3 * 15, 12 + index / 3 * 15, 11, 11), 3, 3);
                     break;
                 case "https://www.bing.com/":
-                    Base("#FF6EDEFF", "#FF1977E9");
-                    dc.DrawEllipse(Gradient("#FFEDFFFF", "#FFB4DEFF"), null, new Point(32, 32), 26, 26);
-                    dc.DrawEllipse(Gradient("#FF5AD8FF", "#FF086AD2"), new Pen(Paint("#FF5CB8ED"), 0.6), new Point(32, 32), 24, 24);
-                    for (int index = 0; index < 36; index++)
-                    {
-                        double angle = index * Math.PI / 18;
-                        double inside = index % 3 == 0 ? 19 : 21;
-                        dc.DrawLine(new Pen(White, index % 3 == 0 ? 1.1 : 0.7),
-                            new Point(32 + Math.Sin(angle) * inside, 32 - Math.Cos(angle) * inside),
-                            new Point(32 + Math.Sin(angle) * 23, 32 - Math.Cos(angle) * 23));
-                    }
-                    Shape("M19,46 L29,29 L45,17 L35,35 Z", Paint("#FFF4F8FC"));
-                    Shape("M29,29 L45,17 L35,35 Z", Gradient("#FFFF7566", "#FFDC3240"));
+                    Base("#FF59738E", "#FF304357");
+                    Line("M51,32 A19,19 0 1 1 13,32 A19,19 0 1 1 51,32 M13,32 H51 M32,13 C20,23 20,41 32,51 M32,13 C44,23 44,41 32,51",
+                        "#FFF1F6FD", 2.1);
                     break;
                 case "notepad.exe":
                     Base("#FFFFFFFF", "#FFEEF0E8");

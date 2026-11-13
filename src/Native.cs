@@ -157,7 +157,7 @@ internal static class Native
         for (int attempt = 0; attempt < 10 && WindowProcessId(window) == process; attempt++)
         {
             nint popup = GetLastActivePopup(root);
-            nint target = popup != 0 && IsApplicationWindowShown(popup) ? popup : window;
+            nint target = IsApplicationWindowShown(window) && popup != 0 && IsApplicationWindowShown(popup) ? popup : window;
             if (IsApplicationWindowShown(target))
             {
                 nint active = GetForegroundWindow();
@@ -165,10 +165,11 @@ internal static class Native
                 SetForegroundWindow(target);
                 if (GetForegroundWindow() == target) return true;
                 if (attempt == 0 && IsApplicationWindowShown(target))
-                    SetWindowPos(target, 0, 0, 0, 0, 0, 0x13); // Raise without stealing keyboard focus.
+                    SetWindowPos(target, 0, 0, 0, 0, 0, 0x13);
             }
+            else if (attempt == 3) ShowApplicationWindow(window);
             if (attempt == 9) break;
-            await Task.Delay(45).ConfigureAwait(false);
+            await Task.Delay(45);
         }
         return false;
     }
@@ -223,6 +224,20 @@ internal static class Native
     internal static bool RestoreWindow(nint window) => ShowWindowAsync(window, 4);
 
     internal static bool ShowApplicationWindow(nint window) => ShowWindowAsync(window, IsIconic(window) ? 9 : 5);
+
+    internal static string? DefaultBrowser()
+    {
+        const uint protocol = 0x1000, executable = 2;
+        var path = new StringBuilder(1024);
+        uint length = (uint)path.Capacity;
+        if (AssocQueryString(protocol, executable, "https", null, path, ref length) != 0) return null;
+        string result = path.ToString();
+        return Path.IsPathFullyQualified(result) && File.Exists(result) &&
+            !Path.GetFileName(result).Equals("LaunchWinApp.exe", StringComparison.OrdinalIgnoreCase) ? result : null;
+    }
+
+    [DllImport("shlwapi.dll", EntryPoint = "AssocQueryStringW", CharSet = CharSet.Unicode)]
+    private static extern int AssocQueryString(uint flags, uint kind, string association, string? verb, StringBuilder output, ref uint length);
     internal static bool IsApplicationWindowShown(nint window) => IsWindowVisible(window) && !IsIconic(window);
 
     internal static nint FindTitledWindow(string executable, string className, string? title, uint process = 0)
@@ -322,6 +337,12 @@ internal static class Native
         if (!GetLastInputInfo(ref input)) return false;
         uint elapsed = unchecked((uint)Environment.TickCount - input.Tick);
         return elapsed < 0x80000000 && elapsed >= duration.TotalMilliseconds;
+    }
+
+    internal static bool HasActiveMenu()
+    {
+        var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
+        return GetGUIThreadInfo(0, ref info) && (info.Flags & 0x1C) != 0;
     }
 
     [StructLayout(LayoutKind.Sequential)]

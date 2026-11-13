@@ -12,12 +12,14 @@ internal static class NativeTrayMenu
     internal static nint ShowContextMenu(TraySnapshot.Item item, Point anchor)
     {
         var placement = new ClassicMenuAnchor(item, anchor);
-        TryActivate(item, placement, anchor);
+        TryActivate(item, placement, anchor, doubleClick: false);
         return placement.Menu;
     }
 
-    internal static bool Invoke(TraySnapshot.Item item, Point anchor) => TryActivate(item, null, anchor);
+    internal static bool Invoke(TraySnapshot.Item item, Point anchor, bool doubleClick = false) =>
+        TryActivate(item, null, anchor, doubleClick);
     internal static bool IsMenuOpen(nint menu) => menu != 0 && IsWindowVisible(menu);
+    internal static bool HasForegroundMenu => Native.HasActiveMenu();
     internal static Point CursorPosition() => GetCursorPos(out var cursor) ? new Point(cursor.X, cursor.Y) : new Point();
     internal static bool IsNativeSurface(nint window)
     {
@@ -27,7 +29,7 @@ internal static class NativeTrayMenu
                 "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow";
     }
 
-    private static bool TryActivate(TraySnapshot.Item item, ClassicMenuAnchor? context, Point anchor)
+    private static bool TryActivate(TraySnapshot.Item item, ClassicMenuAnchor? context, Point anchor, bool doubleClick)
     {
         object? automation = null;
         var candidates = new List<(IUIAutomationElement Element, bool Exact, nint Surface)>();
@@ -95,7 +97,8 @@ internal static class NativeTrayMenu
                 // UI Automation can return success for a parent menu. Only accept the target app's menu.
                 return context.WaitForMenu();
             }
-            if (!ClickElement(client, element, surface, right: false) && !InvokePrimary(element)) return false;
+            if (!ClickElement(client, element, surface, right: false, doubleClick) && (doubleClick || !InvokePrimary(element)))
+                return false;
             if (openedOverflow) Thread.Sleep(180);
             return true;
         }
@@ -115,7 +118,7 @@ internal static class NativeTrayMenu
         }
     }
 
-    private static bool ClickElement(IUIAutomation client, IUIAutomationElement element, nint surface, bool right)
+    private static bool ClickElement(IUIAutomation client, IUIAutomationElement element, nint surface, bool right, bool doubleClick = false)
     {
         if (!IsWindowVisible(surface)) return false;
         var rect = element.CurrentBoundingRectangle;
@@ -152,7 +155,7 @@ internal static class NativeTrayMenu
         try
         {
             hitWindow = WindowFromPoint(center);
-            return (hitWindow == surface || IsChild(surface, hitWindow)) && SendClick(right);
+            return (hitWindow == surface || IsChild(surface, hitWindow)) && SendClick(right, doubleClick);
         }
         finally
         {
@@ -162,15 +165,16 @@ internal static class NativeTrayMenu
         }
     }
 
-    private static bool SendClick(bool right)
+    private static bool SendClick(bool right, bool doubleClick)
     {
         uint down = right ? 0x0008u : 0x0002u;
         var press = new MouseEvent { Data = new MouseData { Flags = down } };
         var release = new MouseEvent { Data = new MouseData { Flags = down << 1 } };
         int size = Marshal.SizeOf<MouseEvent>();
-        uint sent = SendInput(2, [press, release], size);
-        if (sent == 1) SendInput(1, [release], size);
-        return sent == 2;
+        MouseEvent[] inputs = doubleClick ? [press, release, press, release] : [press, release];
+        uint sent = SendInput((uint)inputs.Length, inputs, size);
+        if (sent % 2 == 1) SendInput(1, [release], size);
+        return sent == inputs.Length;
     }
 
     private static bool InvokePrimary(IUIAutomationElement element)
