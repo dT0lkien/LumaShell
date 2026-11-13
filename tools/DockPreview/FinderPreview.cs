@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -61,6 +62,7 @@ internal static class FinderPreview
 
             VerifyShellMenu(assembly, desktop, sandbox);
             VerifyLauncherMenu(assembly, Path.Combine(sandbox, "Sample.exe"));
+            VerifyTrayActions(assembly);
             VerifyHiddenWindow(assembly);
             VerifyFolderShortcut(assembly);
 
@@ -92,6 +94,57 @@ internal static class FinderPreview
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
         }
+    }
+
+    private static void VerifyTrayActions(Assembly assembly)
+    {
+        const BindingFlags internalInstance = BindingFlags.Instance | BindingFlags.NonPublic;
+        var type = assembly.GetType("LumaShell.TrayIcons", throwOnError: true)!;
+        var itemType = assembly.GetType("LumaShell.TraySnapshot+Item", throwOnError: true)!;
+        bool exited = false;
+        var tray = Activator.CreateInstance(type, internalInstance, null,
+            new object[] { (Action)(() => exited = true), (Action)(() => { }) }, null)!;
+        var icon = new DrawingImage(new GeometryDrawing(Brushes.White, null, new RectangleGeometry(new Rect(0, 0, 14, 14))));
+        var snapshot = Array.CreateInstance(itemType, 1);
+        snapshot.SetValue(Activator.CreateInstance(itemType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new object?[] { "probe", Environment.ProcessPath, "Luma Shell", true, icon, false, (nint)0, 0u,
+                Guid.Empty, false, null }, null), 0);
+        type.GetField("snapshot", internalInstance)!.SetValue(tray, snapshot);
+        var toggle = (FrameworkElement)type.GetProperty("View", internalInstance)!.GetValue(tray)!;
+        var popup = (Popup)type.GetField("popup", internalInstance)!.GetValue(tray)!;
+        var panel = (Border)type.GetField("actionPanel", internalInstance)!.GetValue(tray)!;
+        var list = (StackPanel)type.GetField("entries", internalInstance)!.GetValue(tray)!;
+        var window = new Window { Content = toggle, Width = 550, Height = 95, Top = 30, Left = 600, Topmost = true };
+        try
+        {
+            window.Show();
+            type.GetMethod("RenderPopup", internalInstance)!.Invoke(tray, null);
+            popup.IsOpen = true;
+            var row = (Button)list.Children[0];
+            PumpUntil(() => row.IsVisible && row.ActualWidth > 0, "laying out the tray row");
+            Point center = row.PointToScreen(new Point(row.ActualWidth / 2, row.ActualHeight / 2));
+            SetCursorPos((int)center.X, (int)center.Y);
+            mouse_event(0x0008, 0, 0, 0, 0);
+            mouse_event(0x0010, 0, 0, 0, 0);
+            PumpUntil(() => panel.IsVisible && panel.ActualWidth > 0, "opening the tray actions with a right click");
+            if (!popup.IsOpen || panel.PointToScreen(new Point(panel.ActualWidth, 0)).X > row.PointToScreen(new Point()).X)
+                throw new InvalidOperationException("The tray actions overlapped or dismissed the list.");
+            var exit = Find<Button>(panel, button => Equals(AutomationProperties.GetName(button), "Выйти из Luma"))
+                ?? throw new InvalidOperationException("The tray did not expose the app's exit action.");
+            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (!exited) throw new InvalidOperationException("The tray did not invoke the selected action.");
+            Console.WriteLine("Right-clicking the tray opened working actions to the left and kept the list visible.");
+        }
+        finally
+        {
+            popup.IsOpen = false;
+            window.Close();
+        }
+        var native = assembly.GetType("LumaShell.NativeTrayMenu", throwOnError: true)!;
+        var position = native.GetMethod("MenuPosition", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var area = new System.Drawing.Rectangle(-1920, 40, 1920, 1040);
+        var actual = (Point)position.Invoke(null, [new Point(-280, 1040), area, 210, 160])!;
+        if (actual != new Point(-498, 920)) throw new InvalidOperationException("The native menu did not fit to the left on a secondary display.");
     }
 
     private static void VerifyLauncherMenu(Assembly assembly, string executable)

@@ -143,7 +143,7 @@ internal sealed class App : Application
     private void Tick()
     {
         if (preferences.Chrome && preferences.HideWindowsTaskbar) taskbar.SetEnabled(true);
-        taskbar.Tick();
+        taskbar.Tick(desktop.UsingNativeTray);
         PlaceWindows();
         RefreshVisibility();
         if (++ticks % 5 == 0)
@@ -161,6 +161,7 @@ internal sealed class App : Application
             desktop.RefreshClock();
             if (preferences.AutoInstallUpdates && updates.CanInstallAutomatically &&
                 finder is null && !fullscreen && !screenshots.Busy && !island.KeepSession && !taskbar.Revealing &&
+                !desktop.TrayIsOpen && !launcher.IsOpen &&
                 Native.IsDesktop(Native.GetForegroundWindow()) && Native.IdleFor(TimeSpan.FromMinutes(3)) &&
                 updates.Schedule(restart: true, automatic: true))
             {
@@ -267,7 +268,8 @@ internal sealed class App : Application
     private void RefreshVisibility()
     {
         nint foreground = Native.GetForegroundWindow();
-        bool own = Native.BelongsToCurrentProcess(foreground) && foreground != finder?.Handle;
+        bool own = Native.BelongsToCurrentProcess(foreground) && foreground != finder?.Handle ||
+            desktop.UsingNativeTray && NativeTrayMenu.IsNativeSurface(foreground);
         if (!own && foreground != 0) lastForeground = foreground;
         nint underlying = own ? lastForeground : foreground;
         bool onDesktop = Native.IsDesktop(underlying);

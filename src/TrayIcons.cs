@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using static LumaShell.Visuals;
 
 namespace LumaShell;
@@ -17,30 +18,44 @@ internal sealed class TrayIcons
 {
     private readonly Button toggle;
     private readonly StackPanel entries = new();
+    private readonly ScrollViewer list;
     private readonly StackPanel actions = new();
     private readonly TextBlock status = Text("", 12, Muted);
     private readonly Popup popup;
     private readonly Border trayPanel;
     private readonly Border actionPanel;
     private readonly Action exitLuma;
+    private readonly Action revealWindowsTray;
+    private readonly DispatcherTimer menuTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private TraySnapshot.Item[] snapshot = [];
     private TraySnapshot.Item? selected;
     private bool refreshing;
     private bool busy;
     private bool openingWindow;
+    private nint nativeMenu;
 
     internal FrameworkElement View => toggle;
+    internal bool UsingNativeTray => busy;
+    internal bool IsOpen => popup.IsOpen;
 
-    internal TrayIcons(Action exitLuma)
+    internal TrayIcons(Action exitLuma, Action revealWindowsTray)
     {
         this.exitLuma = exitLuma;
+        this.revealWindowsTray = revealWindowsTray;
         toggle = Button(Icon("M3,12 L10,5 L17,12", 14), "Трей приложений Luma", Show, Brushes.Transparent, 6);
-        var body = new StackPanel { Width = 258 };
-        body.Children.Add(Text("Трей приложений", 16, bold: true));
+        var body = new StackPanel { Width = 248 };
+        var heading = new DockPanel();
+        var windowsTray = Button(Icon("M2,3 H18 V16 H2 Z M2,12 H18 M12,14 H15", 14), "Открыть трей Windows", OpenWindowsTray,
+            Brushes.Transparent, 6);
+        DockPanel.SetDock(windowsTray, Dock.Right);
+        heading.Children.Add(windowsTray);
+        heading.Children.Add(Text("Трей приложений", 16, bold: true));
+        body.Children.Add(heading);
         status.Margin = new Thickness(0, 4, 0, 7);
         status.TextWrapping = TextWrapping.Wrap;
         body.Children.Add(status);
-        body.Children.Add(new ScrollViewer { Content = entries, MaxHeight = 290, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        list = new ScrollViewer { Content = entries, MaxHeight = 290, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        body.Children.Add(list);
         trayPanel = CardSurface(body);
         actionPanel = CardSurface(actions);
         actionPanel.Width = 207;
@@ -56,23 +71,40 @@ internal sealed class TrayIcons
             StaysOpen = false, Child = host };
         popup.CustomPopupPlacementCallback = (size, target, _) =>
             [new CustomPopupPlacement(new Point(target.Width - size.Width, target.Height + 6), PopupPrimaryAxis.Horizontal)];
-        popup.Opened += (_, _) => Entrance(trayPanel);
-        popup.Closed += (_, _) => HideActions();
-        toggle.Unloaded += (_, _) => popup.IsOpen = false;
+        popup.Opened += (_, _) =>
+        {
+            Entrance(trayPanel);
+            FocusFirstRow();
+        };
+        popup.Closed += (_, _) =>
+        {
+            menuTimer.Stop();
+            nativeMenu = 0;
+            popup.StaysOpen = false;
+            HideActions();
+        };
+        toggle.IsVisibleChanged += (_, _) => { if (!toggle.IsVisible) popup.IsOpen = false; };
+        menuTimer.Tick += (_, _) =>
+        {
+            if (NativeTrayMenu.IsMenuOpen(nativeMenu)) return;
+            menuTimer.Stop();
+            nativeMenu = 0;
+            popup.StaysOpen = false;
+        };
         host.PreviewKeyDown += (_, args) =>
         {
             if (args.Key != Key.Escape) return;
             args.Handled = true;
-            if (selected is not null) HideActions();
+            if (selected is not null) { HideActions(); FocusFirstRow(); }
             else popup.IsOpen = false;
         };
     }
 
     private static Border CardSurface(UIElement child)
     {
-        var surface = Surface(Gradient("#F32B2D39", "#FB16171F"), 18, child);
-        surface.Padding = new Thickness(12);
-        surface.BorderBrush = Line;
+        var surface = Surface(Gradient("#F334363E", "#FB23252A"), 19, child);
+        surface.Padding = new Thickness(10);
+        surface.BorderBrush = Paint("#58FFFFFF");
         surface.BorderThickness = new Thickness(1);
         return surface;
     }
@@ -80,26 +112,35 @@ internal sealed class TrayIcons
     internal void Show()
     {
         if (!toggle.IsVisible) return;
-        if (!popup.IsOpen)
+        if (popup.IsOpen)
         {
-            RenderPopup();
-            popup.IsOpen = true;
+            popup.IsOpen = false;
+            return;
         }
+        RenderPopup();
+        popup.IsOpen = true;
         Refresh();
+    }
+
+    private void OpenWindowsTray()
+    {
+        popup.IsOpen = false;
+        revealWindowsTray();
     }
 
     internal async void Refresh()
     {
-        if (refreshing) return;
+        if (refreshing || busy || nativeMenu != 0) return;
         refreshing = true;
         try
         {
-            var previous = snapshot;
-            snapshot = (await Task.Run(TraySnapshot.Read)).OrderByDescending(item => item.Pinned)
+            var updated = (await Task.Run(TraySnapshot.Read)).OrderByDescending(item => item.Pinned)
                 .ThenBy(item => item.Title, StringComparer.CurrentCultureIgnoreCase).ToArray();
-            if (!popup.IsOpen || previous.Select(item => (item.Key, item.Title, item.Cached))
-                .SequenceEqual(snapshot.Select(item => (item.Key, item.Title, item.Cached)))) return;
-            if (selected is not null && !snapshot.Any(item => item.Key == selected.Key)) HideActions();
+            if (busy || nativeMenu != 0 || selected is not null && popup.IsOpen) return;
+            bool changed = !snapshot.Select(item => (item.Key, item.Title, item.Cached))
+                .SequenceEqual(updated.Select(item => (item.Key, item.Title, item.Cached)));
+            snapshot = updated;
+            if (!popup.IsOpen || !changed) return;
             RenderPopup();
         }
         finally { refreshing = false; }
@@ -107,7 +148,10 @@ internal sealed class TrayIcons
 
     private void RenderPopup()
     {
-        status.Text = snapshot.Length == 0 ? "Значки запущенных приложений не найдены" : "Левый клик — действие значка, правый — меню приложения";
+        bool restoreFocus = entries.IsKeyboardFocusWithin || entries.Children.Count == 0;
+        double offset = list.VerticalOffset;
+        status.Text = snapshot.Length == 0 ? "Значки запущенных приложений не найдены" : "";
+        status.Visibility = snapshot.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         entries.Children.Clear();
         foreach (var item in snapshot)
         {
@@ -116,18 +160,27 @@ internal sealed class TrayIcons
             DockPanel.SetDock(icon, Dock.Left);
             row.Children.Add(icon);
             row.Children.Add(Text(item.Title, 12));
-            var button = Button(row, item.Title, () => ActivateIcon(item, false, button: null), Card);
+            var button = Button(row, item.Title, () => ActivateIcon(item), Paint("#5720262F"));
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             button.Margin = new Thickness(0, 0, 0, 4);
-            button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; ActivateIcon(item, true, button); };
+            button.PreviewMouseRightButtonUp += (_, args) => { args.Handled = true; OpenContext(item, button); };
             button.PreviewKeyDown += (_, args) =>
             {
-                if (args.Key != Key.Apps && !(args.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift)) return;
+                if (args.Key != Key.Apps && !((args.Key == Key.F10 || args.SystemKey == Key.F10) &&
+                    Keyboard.Modifiers == ModifierKeys.Shift)) return;
                 args.Handled = true;
-                ActivateIcon(item, true, button);
+                OpenContext(item, button);
             };
             entries.Children.Add(button);
         }
+        list.ScrollToVerticalOffset(offset);
+        if (restoreFocus && popup.IsOpen) FocusFirstRow();
+    }
+
+    private void FocusFirstRow()
+    {
+        if (entries.Children.Count > 0 && entries.Children[0] is Button row)
+            row.Focus();
     }
 
     private async Task OpenWindow(TraySnapshot.Item item)
@@ -142,20 +195,23 @@ internal sealed class TrayIcons
             {
                 nint preferred = window?.Handle ?? 0;
                 opened = await Prism.OpenRunning(item.Path, preferred, canElevate: false) == true;
-                if (!opened && popup.IsOpen) await Task.Run(() => NativeTrayMenu.TryActivate(item, false));
+                if (!opened && popup.IsOpen)
+                {
+                    await InvokeIcon(item);
+                    opened = await Prism.OpenRunning(item.Path, preferred, canElevate: false) == true;
+                }
                 if (!opened) opened = await Prism.OpenRunning(item.Path, preferred) == true;
             }
             else opened = window is not null && await Native.FocusWindow(window.Handle);
             if (opened)
                 popup.IsOpen = false;
-            else status.Text = "Не удалось открыть окно. Системный трей доступен по Ctrl+Alt+B.";
+            else SetStatus("Не удалось открыть окно");
         }
         finally { openingWindow = false; }
     }
 
-    private void ShowActions(TraySnapshot.Item item, FrameworkElement row, bool allowBusy = false)
+    private void ShowActions(TraySnapshot.Item item, FrameworkElement row)
     {
-        if (busy && !allowBusy) return;
         selected = item;
         double offset = row.TranslatePoint(new Point(), trayPanel).Y;
         actionPanel.Margin = new Thickness(0, Math.Clamp(offset, 0, Math.Max(0, trayPanel.ActualHeight - 145)), 8, 0);
@@ -176,10 +232,16 @@ internal sealed class TrayIcons
         var title = Text(item.Title, 13, bold: true);
         title.Margin = new Thickness(3, 0, 3, 6);
         actions.Children.Add(title);
+        if (TrayAppActions.IsLuma(item.Path))
+        {
+            AddAction("Показать трей Windows", OpenWindowsTray);
+            AddAction("Выйти из Luma", exitLuma);
+            return;
+        }
         AddAction(Prism.IsTrayClient(item.Path) ? "Открыть Prism" : "Открыть окно", async () => await OpenWindow(item));
-        AddAction("Родное меню значка", () => ActivateIcon(item, true, null));
-        if (TrayAppActions.IsLuma(item.Path)) AddAction("Выйти из Luma", exitLuma);
-        else if (TrayAppActions.CanEnd(item.Path)) AddAction("Завершить приложение…", () => ConfirmEnd(item));
+        AddAction("Родное меню значка", () => OpenContext(item, null));
+        AddAction("Показать трей Windows", OpenWindowsTray);
+        if (TrayAppActions.CanEnd(item.Path)) AddAction("Завершить приложение…", () => ConfirmEnd(item));
     }
 
     private void ConfirmEnd(TraySnapshot.Item item)
@@ -197,41 +259,66 @@ internal sealed class TrayIcons
     {
         var button = Button(label, action, Card);
         button.HorizontalContentAlignment = HorizontalAlignment.Left;
+        button.HorizontalAlignment = HorizontalAlignment.Stretch;
         button.Margin = new Thickness(0, 0, 0, 4);
         actions.Children.Add(button);
     }
 
-    private async void ActivateIcon(TraySnapshot.Item item, bool contextMenu, FrameworkElement? button)
+    private async void OpenContext(TraySnapshot.Item item, FrameworkElement? button)
+    {
+        if (busy || openingWindow || !popup.IsOpen || nativeMenu != 0) return;
+        SetStatus("");
+        if (button is not null) ShowActions(item, button);
+        if (TrayAppActions.IsLuma(item.Path)) return;
+        double y = button?.TranslatePoint(new Point(), trayPanel).Y ?? actionPanel.Margin.Top;
+        var anchor = trayPanel.PointToScreen(new Point(0, Math.Max(0, y)));
+        busy = true;
+        popup.StaysOpen = true;
+        try
+        {
+            nint menu = await Task.Run(() => NativeTrayMenu.ShowContextMenu(item, anchor));
+            if (!popup.IsOpen) return;
+            if (NativeTrayMenu.IsMenuOpen(menu))
+            {
+                nativeMenu = menu;
+                HideActions();
+                SetStatus("");
+                menuTimer.Start();
+            }
+            else SetStatus("Родное меню недоступно. Действия Luma — слева.");
+        }
+        finally
+        {
+            if (nativeMenu == 0) popup.StaysOpen = false;
+            busy = false;
+        }
+    }
+
+    private void SetStatus(string message)
+    {
+        status.Text = message;
+        status.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private async void ActivateIcon(TraySnapshot.Item item)
     {
         if (busy) return;
-        if (!contextMenu && Prism.IsTrayClient(item.Path))
+        if (Prism.IsTrayClient(item.Path))
         {
             await OpenWindow(item);
             return;
         }
-        var anchor = trayPanel.PointToScreen(new Point(0, 0));
+        if (await InvokeIcon(item)) popup.IsOpen = false;
+        else if (popup.IsOpen) await OpenWindow(item);
+    }
+
+    private async Task<bool> InvokeIcon(TraySnapshot.Item item)
+    {
+        if (busy) return false;
         busy = true;
-        try
-        {
-            using var placement = NativeTrayMenu.PlaceClassicMenu(item, anchor);
-            bool opened = await Task.Run(() => NativeTrayMenu.TryActivate(item, contextMenu));
-            if (!opened && popup.IsOpen)
-            {
-                if (!contextMenu) await OpenWindow(item);
-                else
-                {
-                    status.Text = "Windows не предоставила меню значка. Доступны действия Luma слева.";
-                    ShowActions(item, button ?? trayPanel, allowBusy: true);
-                }
-            }
-            if (opened)
-            {
-                HideActions();
-                if (!contextMenu) popup.IsOpen = false;
-                await Task.Delay(450);
-            }
-        }
-        finally { busy = false; }
+        popup.StaysOpen = true;
+        try { return await Task.Run(() => NativeTrayMenu.Invoke(item)); }
+        finally { popup.StaysOpen = false; busy = false; }
     }
 
     private async void EndApplication(TraySnapshot.Item item)
@@ -242,7 +329,7 @@ internal sealed class TrayIcons
         {
             bool ended = await Task.Run(() => TrayAppActions.TryEnd(item));
             HideActions();
-            status.Text = ended ? "Приложение завершено" : "Не удалось однозначно найти процесс или Windows отказала в завершении";
+            SetStatus(ended ? "Приложение завершено" : "Не удалось завершить приложение");
             Refresh();
         }
         finally { busy = false; }
@@ -251,7 +338,8 @@ internal sealed class TrayIcons
 
 internal static class TraySnapshot
 {
-    internal sealed record Item(string Key, string Path, string Title, bool Pinned, ImageSource Icon, bool Cached = false, nint Owner = 0, uint Uid = 0, Guid IconGuid = default, bool HasUid = false);
+    internal sealed record Item(string Key, string Path, string Title, bool Pinned, ImageSource Icon, bool Cached = false,
+        nint Owner = 0, uint Uid = 0, Guid IconGuid = default, bool HasUid = false, string? OwnerExecutable = null);
 
     internal static Item[] Read()
     {
@@ -327,7 +415,8 @@ public sealed class TraySnapshotCallback : ITraySnapshotCallback
                 if (programIcon is not null) image = Launcher.IconImage(programIcon.Handle);
             }
             if (image is not null)
-                lock (items) items[(icon.Window, icon.Id)] = new($"live:{icon.Window}:{icon.Id}", path, title, icon.Preference == 2, image, Owner: icon.Window, Uid: icon.Id, IconGuid: icon.Guid);
+                lock (items) items[(icon.Window, icon.Id)] = new($"live:{icon.Window}:{icon.Id}", path, title, icon.Preference == 2,
+                    image, Owner: icon.Window, Uid: icon.Id, IconGuid: icon.Guid, OwnerExecutable: executable);
         }
         catch (Exception error) when (error is COMException or ArgumentException or InvalidOperationException or IOException or System.ComponentModel.Win32Exception) { }
         return 0;

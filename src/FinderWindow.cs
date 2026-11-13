@@ -87,7 +87,7 @@ internal sealed class FinderWindow : Window
         WindowChrome.SetWindowChrome(this, chrome);
 
         var layout = new Grid();
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(184) });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(184), MinWidth = 146, MaxWidth = 260 });
         layout.ColumnDefinitions.Add(new ColumnDefinition());
         var sidebar = new DockPanel();
         var lights = new StackPanel { Orientation = Orientation.Horizontal, Height = 43, Margin = new Thickness(12, 0, 0, 0) };
@@ -103,6 +103,15 @@ internal sealed class FinderWindow : Window
         sideSurface.BorderThickness = new Thickness(1);
         sideSurface.Margin = new Thickness(8, 8, 0, 8);
         layout.Children.Add(sideSurface);
+        var sidebarDivider = new GridSplitter
+        {
+            Width = 7, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Stretch,
+            ResizeDirection = GridResizeDirection.Columns, ResizeBehavior = GridResizeBehavior.CurrentAndNext,
+            Background = Brushes.Transparent, Margin = new Thickness(0, 49, 0, 8)
+        };
+        Panel.SetZIndex(sidebarDivider, 1);
+        AutomationProperties.SetName(sidebarDivider, "Ширина боковой панели");
+        layout.Children.Add(sidebarDivider);
         AddSection("Избранное");
         AddPlace("Рабочий стол", Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "M2,3 H18 V15 H2 Z M6,18 H14 M10,15 V18");
         AddPlace("Документы", Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "M5,2 H12 L16,6 V18 H5 Z M12,2 V6 H16");
@@ -281,10 +290,23 @@ internal sealed class FinderWindow : Window
 
     private static Button Light(string color, string label, Action action)
     {
-        var light = new System.Windows.Shapes.Ellipse { Width = 12, Height = 12, Fill = Paint(color) };
+        var light = new Grid { Width = 13, Height = 13 };
+        light.Children.Add(new System.Windows.Shapes.Ellipse { Fill = Paint(color), Stroke = Paint("#4D000000"), StrokeThickness = 0.6 });
+        string symbol = color switch
+        {
+            "#FFFF605C" => "M4,4 L12,12 M12,4 L4,12",
+            "#FFFFBD44" => "M3,8 H13",
+            _ => "M4,11 V5 H10 M6,13 H12 V7"
+        };
+        var glyph = Icon(symbol, 7, Paint("#B825241F"));
+        glyph.HorizontalAlignment = HorizontalAlignment.Center;
+        glyph.Visibility = Visibility.Hidden;
+        light.Children.Add(glyph);
         var button = Button(light, label, action, Brushes.Transparent, 0);
         button.Width = 23;
         button.FocusVisualStyle = null;
+        button.MouseEnter += (_, _) => glyph.Visibility = Visibility.Visible;
+        button.MouseLeave += (_, _) => glyph.Visibility = Visibility.Hidden;
         WindowChrome.SetIsHitTestVisibleInChrome(button, true);
         return button;
     }

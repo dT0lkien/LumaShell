@@ -56,6 +56,8 @@ internal sealed class Desktop
     internal Window MenuBar { get; } = Overlay("Luma • Строка меню", 800, BarHeight);
     internal Window DockWindow { get; } = Overlay("Luma • Dock", 1120, 145);
     internal bool Interacting => dock.IsMouseOver || DockWindow.IsActive || downloads.IsOpen;
+    internal bool UsingNativeTray => trayIcons.UsingNativeTray;
+    internal bool TrayIsOpen => trayIcons.IsOpen;
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
         Action nativeTray, Action toggleTaskbar, Action update, Updates releases, Action openLauncher, Action toggleWin,
@@ -66,7 +68,7 @@ internal sealed class Desktop
         this.openLauncher = openLauncher;
         this.openFinder = openFinder;
         var menu = new DockPanel { Margin = new Thickness(12, 0, 15, 0) };
-        trayIcons = new TrayIcons(exit);
+        trayIcons = new TrayIcons(exit, nativeTray);
         tray = new MenuTray(() => openIsland(IslandTab.Notifications), trayIcons.Show, update, releases);
         DockPanel.SetDock(tray.View, Dock.Right);
         menu.Children.Add(tray.View);

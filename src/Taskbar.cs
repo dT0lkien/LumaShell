@@ -46,7 +46,7 @@ internal sealed class Taskbar : IDisposable
         { Fail(); }
     }
 
-    internal void Tick()
+    internal void Tick(bool trayInUse = false)
     {
         if (ready is not null)
         {
@@ -60,7 +60,7 @@ internal sealed class Taskbar : IDisposable
             Active = true;
         }
         var now = DateTime.UtcNow;
-        if (!Active || now < revealUntil) return;
+        if (!Active || now < revealUntil || trayInUse) return;
         nint primary = FindWindow("Shell_TrayWnd", null);
         if (primary == 0) return;
         if (currentBar != primary || now >= nextStateCheck)

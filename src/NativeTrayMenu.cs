@@ -9,85 +9,165 @@ namespace LumaShell;
 
 internal static class NativeTrayMenu
 {
-    internal static IDisposable PlaceClassicMenu(TraySnapshot.Item item, Point anchor)
+    internal static nint ShowContextMenu(TraySnapshot.Item item, Point anchor)
     {
-        uint owner = Native.WindowProcessId(item.Owner);
-        if (owner == 0 || !string.Equals(Native.ProcessImage(owner), item.Path, StringComparison.OrdinalIgnoreCase))
-        {
-            uint found = 0;
-            foreach (var window in Native.OpenWindows())
-            {
-                if (!window.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase)) continue;
-                uint process = Native.WindowProcessId(window.Handle);
-                if (found != 0 && process != found) { found = 0; break; }
-                found = process;
-            }
-            owner = found;
-        }
-        return new ClassicMenuAnchor(owner, anchor, item.Path);
+        var placement = new ClassicMenuAnchor(item, anchor);
+        TryActivate(item, placement);
+        return placement.Menu;
     }
 
-    internal static bool TryActivate(TraySnapshot.Item item, bool contextMenu)
+    internal static bool Invoke(TraySnapshot.Item item) => TryActivate(item, null);
+    internal static bool IsMenuOpen(nint menu) => menu != 0 && IsWindowVisible(menu);
+    internal static bool IsNativeSurface(nint window)
+    {
+        var name = new System.Text.StringBuilder(64);
+        return window != 0 && GetClassName(window, name, name.Capacity) != 0 &&
+            name.ToString() is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or
+                "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow";
+    }
+
+    private static bool TryActivate(TraySnapshot.Item item, ClassicMenuAnchor? context)
     {
         object? automation = null;
-        var candidates = new List<(IUIAutomationElement Element, bool Exact)>();
+        var candidates = new List<(IUIAutomationElement Element, bool Exact, nint Surface)>();
         nint overflow = 0;
         RectPixels original = default;
-        bool restoreOverflow = false;
+        bool openedOverflow = false;
+        TaskbarAccess? taskbar = null;
         try
         {
             var client = new CUIAutomation();
             automation = client;
+            if (automation is IUIAutomation2 timeouts)
+            {
+                timeouts.ConnectionTimeout = 850;
+                timeouts.TransactionTimeout = 1100;
+            }
             nint primary = FindWindow("Shell_TrayWnd", null);
+            if (primary == 0) return false;
+            taskbar = new TaskbarAccess(primary);
             overflow = OverflowWindow();
-            bool openedOverflow = false;
-            if (OverflowContent(overflow) == 0 && primary != 0 && (overflow == 0 || !IsWindowVisible(overflow)))
+            bool positioned = TryIconBounds(item, out var iconBounds);
+            FindMatches(client, primary, false, item.Title, positioned ? iconBounds : null, candidates);
+            if (!candidates.Exists(candidate => candidate.Exact) && (overflow == 0 || !IsWindowVisible(overflow)))
             {
                 openedOverflow = OpenOverflow(client, primary);
                 overflow = OverflowWindow();
             }
-            // A hidden XAML overflow can have an empty automation tree. Materialize it before
-            // looking up the item; do not reveal the taskbar or change any IsPromoted preferences.
-            if (overflow != 0 && (openedOverflow || !IsWindowVisible(overflow)) && GetWindowRect(overflow, out original))
-            {
-                int width = Math.Max(1, original.Right - original.Left);
-                var screen = System.Windows.Forms.SystemInformation.VirtualScreen;
-                restoreOverflow = SetWindowPos(overflow, 0, screen.Left - width - 64, screen.Top, 0, 0, 0x55);
-                if (restoreOverflow) Thread.Sleep(80);
-            }
-            bool positioned = TryIconBounds(item, out var iconBounds);
-            if (primary != 0) FindMatches(client, primary, false, item.Title, positioned ? iconBounds : null, candidates);
             if (overflow != 0)
             {
-                nint content = OverflowContent(overflow);
-                FindMatches(client, content != 0 ? content : overflow, true, item.Title, positioned ? iconBounds : null, candidates);
+                if (openedOverflow && GetWindowRect(overflow, out original))
+                {
+                    // Move a temporary overflow beside the Luma tray while Explorer handles the click.
+                    var area = WorkingArea(context?.Anchor ?? new Point(original.Left, original.Top));
+                    int width = original.Right - original.Left;
+                    if (width > 0)
+                    {
+                        int left = context is null ? System.Windows.Forms.SystemInformation.VirtualScreen.Left - width - 64 :
+                            Math.Clamp((int)context.Anchor.X - width - 10, area.Left, Math.Max(area.Left, area.Right - width));
+                        SetWindowPos(overflow, 0, left, area.Top + 35, 0, 0, 0x15);
+                    }
+                    Thread.Sleep(90);
+                }
+                if (!candidates.Exists(candidate => candidate.Exact))
+                {
+                    positioned = TryIconBounds(item, out iconBounds);
+                    FindMatches(client, overflow, true, item.Title, positioned ? iconBounds : null, candidates);
+                    if (!candidates.Exists(candidate => candidate.Surface == overflow) && OverflowContent(overflow) is var content && content != 0)
+                        FindMatches(client, content, true, item.Title, positioned ? iconBounds : null, candidates);
+                }
             }
             var exact = candidates.FindAll(candidate => candidate.Exact);
             var choices = exact.Count > 0 ? exact : candidates;
             // Never guess by list index or executable name: an app can own several different icons.
             if (choices.Count != 1) return false;
-            var element = choices[0].Element;
-            if (contextMenu)
+            var (element, _, surface) = choices[0];
+            if (context is not null)
             {
-                if (element is not IUIAutomationElement3 menu) return false;
-                menu.ShowContextMenu();
+                // An actual Explorer click invokes the icon callback, including for elevated apps.
+                if (!ClickElement(client, element, surface))
+                {
+                    if (element is not IUIAutomationElement3 menu) return false;
+                    menu.ShowContextMenu();
+                }
+                // UI Automation can return success for a parent menu. Only accept the target app's menu.
+                return context.WaitForMenu();
             }
-            else
-            {
-                if (!InvokePrimary(element)) return false;
-            }
-            // Providers can dispatch asynchronously; keep the overflow alive until the callback runs.
-            if (restoreOverflow) Thread.Sleep(170);
+            if (!InvokePrimary(element)) return false;
+            if (openedOverflow) Thread.Sleep(180);
             return true;
         }
         catch (Exception error) when (error is COMException or InvalidCastException or UnauthorizedAccessException or InvalidOperationException)
         { return false; }
         finally
         {
-            if (restoreOverflow) SetWindowPos(overflow, 0, original.Left, original.Top, 0, 0, 0x95);
+            if (openedOverflow && overflow != 0)
+            {
+                // Return the overflow to its original position without changing icon pinning.
+                uint flags = original.Right > original.Left ? 0x95u : 0x97u;
+                SetWindowPos(overflow, 0, original.Left, original.Top, 0, 0, flags);
+            }
+            taskbar?.Dispose();
             foreach (var candidate in candidates) Marshal.ReleaseComObject(candidate.Element);
             if (automation is not null && Marshal.IsComObject(automation)) Marshal.ReleaseComObject(automation);
         }
+    }
+
+    private static bool ClickElement(IUIAutomation client, IUIAutomationElement element, nint surface)
+    {
+        if (!IsWindowVisible(surface)) return false;
+        var rect = element.CurrentBoundingRectangle;
+        if (rect.right <= rect.left || rect.bottom <= rect.top) return false;
+        var center = new PointPixels { X = rect.left + (rect.right - rect.left) / 2, Y = rect.top + (rect.bottom - rect.top) / 2 };
+        nint hitWindow = WindowFromPoint(center);
+        if (hitWindow != surface && !IsChild(surface, hitWindow)) return false;
+        IUIAutomationElement? hit = null, parent = null;
+        IUIAutomationTreeWalker? walker = null;
+        bool matches = false;
+        try
+        {
+            hit = client.ElementFromPoint(new tagPOINT { x = center.X, y = center.Y });
+            if (hit is null) return false;
+            walker = client.RawViewWalker;
+            for (int depth = 0; depth < 5; depth++)
+            {
+                var node = parent ?? hit;
+                if (client.CompareElements(node, element) != 0) { matches = true; break; }
+                var next = walker.GetParentElement(node);
+                if (parent is not null) Marshal.ReleaseComObject(parent);
+                parent = next;
+                if (parent is null) break;
+            }
+        }
+        catch (COMException) { return false; }
+        finally
+        {
+            if (parent is not null) Marshal.ReleaseComObject(parent);
+            if (hit is not null) Marshal.ReleaseComObject(hit);
+            if (walker is not null) Marshal.ReleaseComObject(walker);
+        }
+        if (!matches || !GetCursorPos(out var old) || !SetCursorPos(center.X, center.Y)) return false;
+        try
+        {
+            hitWindow = WindowFromPoint(center);
+            return (hitWindow == surface || IsChild(surface, hitWindow)) && RightClick();
+        }
+        finally
+        {
+            Thread.Sleep(75);
+            if (GetCursorPos(out var current) && current.X == center.X && current.Y == center.Y)
+                SetCursorPos(old.X, old.Y);
+        }
+    }
+
+    private static bool RightClick()
+    {
+        var press = new MouseEvent { Data = new MouseData { Flags = 0x0008 } };
+        var release = new MouseEvent { Data = new MouseData { Flags = 0x0010 } };
+        int size = Marshal.SizeOf<MouseEvent>();
+        uint sent = SendInput(2, [press, release], size);
+        if (sent == 1) SendInput(1, [release], size);
+        return sent == 2;
     }
 
     private static bool InvokePrimary(IUIAutomationElement element)
@@ -152,8 +232,14 @@ internal static class NativeTrayMenu
                     pattern = element.GetCurrentPattern(10000);
                     if (pattern is not IUIAutomationInvokePattern invoke) continue;
                     invoke.Invoke();
-                    for (int attempt = 0; attempt < 15 && OverflowContent(OverflowWindow()) == 0; attempt++) Thread.Sleep(10);
-                    return OverflowWindow() != 0;
+                    for (int attempt = 0; attempt < 20; attempt++)
+                    {
+                        nint overflow = OverflowWindow();
+                        if (OverflowContent(overflow) != 0 && IsWindowVisible(overflow)) return true;
+                        Thread.Sleep(15);
+                    }
+                    nint result = OverflowWindow();
+                    return result != 0 && IsWindowVisible(result);
                 }
                 finally
                 {
@@ -173,7 +259,7 @@ internal static class NativeTrayMenu
     }
 
     private static void FindMatches(IUIAutomation client, nint window, bool overflow, string title, RectPixels? bounds,
-        List<(IUIAutomationElement Element, bool Exact)> candidates)
+        List<(IUIAutomationElement Element, bool Exact, nint Surface)> candidates)
     {
         IUIAutomationElement? root = null;
         IUIAutomationCondition? condition = null;
@@ -189,14 +275,14 @@ internal static class NativeTrayMenu
                 bool kept = false;
                 try
                 {
-                    if (!overflow && (IsChevron(element) || !InNotificationArea(client, element))) continue;
+                    if (IsChevron(element) || !overflow && !InNotificationArea(client, element)) continue;
                     var rect = element.CurrentBoundingRectangle;
                     bool exact = bounds is { } icon && rect.right > rect.left && rect.bottom > rect.top &&
                         Math.Abs((long)rect.left + rect.right - icon.Left - icon.Right) <= 12 &&
                         Math.Abs((long)rect.top + rect.bottom - icon.Top - icon.Bottom) <= 12;
                     if (!exact && !SameLabel(element.CurrentName, title) && !SameLabel(element.CurrentHelpText, title)) continue;
                     if (candidates.Exists(candidate => client.CompareElements(candidate.Element, element) != 0)) continue;
-                    candidates.Add((element, exact));
+                    candidates.Add((element, exact, window));
                     kept = true;
                 }
                 catch (COMException) { }
@@ -272,6 +358,12 @@ internal static class NativeTrayMenu
     private struct NotifyIconIdentifier { public uint Size; public nint Owner; public uint Uid; public Guid Guid; }
     [StructLayout(LayoutKind.Sequential)]
     private struct RectPixels { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PointPixels { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseEvent { public uint Type; public MouseData Data; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseData { public int X, Y; public uint Button, Flags, Time; public nuint Extra; }
     private delegate bool EnumerateWindow(nint window, nint parameter);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumerateWindow callback, nint parameter);
     [DllImport("shell32.dll")] private static extern int Shell_NotifyIconGetRect(ref NotifyIconIdentifier identifier, out RectPixels bounds);
@@ -280,35 +372,100 @@ internal static class NativeTrayMenu
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(nint window);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(nint window, out RectPixels bounds);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll")] private static extern nint WindowFromPoint(PointPixels point);
+    [DllImport("user32.dll")] private static extern bool IsChild(nint parent, nint child);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out PointPixels point);
+    [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] private static extern uint SendInput(uint count, MouseEvent[] inputs, int size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(nint window, System.Text.StringBuilder name, int capacity);
+    [DllImport("user32.dll")] private static extern bool ShowWindowAsync(nint window, int command);
 
-    private sealed class ClassicMenuAnchor : IDisposable
+    private sealed class TaskbarAccess : IDisposable
     {
-        private readonly WinEvent callback;
-        private readonly nint hook;
+        private readonly nint window;
+        private readonly bool restore;
 
-        internal ClassicMenuAnchor(uint process, Point anchor, string path)
+        internal TaskbarAccess(nint window)
         {
-            callback = (_, _, menu, _, _, _, _) =>
+            this.window = window;
+            if (IsWindowVisible(window)) return;
+            restore = ShowWindowAsync(window, 4);
+            if (restore)
             {
-                if (process == 0 && !string.Equals(Native.Executable(menu), path, StringComparison.OrdinalIgnoreCase)) return;
-                var name = new System.Text.StringBuilder(32);
-                if (menu == 0 || GetClassName(menu, name, name.Capacity) == 0 || name.ToString() != "#32768" ||
-                    !GetWindowRect(menu, out var bounds)) return;
-                var area = System.Windows.Forms.Screen.FromPoint(new System.Drawing.Point((int)anchor.X, (int)anchor.Y)).WorkingArea;
-                int width = bounds.Right - bounds.Left;
-                int left = (int)anchor.X - width - 8;
-                if (left < area.Left) return;
-                int top = Math.Clamp((int)anchor.Y, area.Top, Math.Max(area.Top, area.Bottom - (bounds.Bottom - bounds.Top)));
-                SetWindowPos(menu, 0, left, top, 0, 0, 0x15);
-            };
-            if (process != 0 || !string.IsNullOrEmpty(path)) hook = SetWinEventHook(6, 6, 0, callback, process, 0, 0);
+                for (int attempt = 0; attempt < 12 && !IsWindowVisible(window); attempt++) Thread.Sleep(15);
+            }
         }
 
-        public void Dispose() { if (hook != 0) UnhookWinEvent(hook); }
+        public void Dispose()
+        {
+            if (restore) ShowWindowAsync(window, 0);
+        }
+    }
 
-        private delegate void WinEvent(nint hook, uint type, nint window, int objectId, int child, uint thread, uint time);
-        [DllImport("user32.dll")] private static extern nint SetWinEventHook(uint first, uint last, nint module, WinEvent callback, uint process, uint thread, uint flags);
-        [DllImport("user32.dll")] private static extern bool UnhookWinEvent(nint hook);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(nint window, System.Text.StringBuilder name, int capacity);
+    private static System.Drawing.Rectangle WorkingArea(Point anchor) =>
+        System.Windows.Forms.Screen.FromPoint(new System.Drawing.Point((int)anchor.X, (int)anchor.Y)).WorkingArea;
+
+    internal static Point MenuPosition(Point anchor, System.Drawing.Rectangle area, int width, int height)
+    {
+        const int gap = 8;
+        int top = Math.Clamp((int)anchor.Y, area.Top, Math.Max(area.Top, area.Bottom - height));
+        return new Point(Math.Max(area.Left, (int)anchor.X - width - gap), top);
+    }
+
+    private sealed class ClassicMenuAnchor
+    {
+        private readonly uint owner;
+        private readonly string executable;
+        private readonly HashSet<nint> existing = [];
+        private readonly System.Text.StringBuilder className = new(24);
+        internal Point Anchor { get; }
+        internal nint Menu { get; private set; }
+
+        internal ClassicMenuAnchor(TraySnapshot.Item item, Point anchor)
+        {
+            Anchor = anchor;
+            executable = item.OwnerExecutable ?? item.Path;
+            uint candidate = Native.WindowProcessId(item.Owner);
+            if (candidate != 0 && !string.IsNullOrEmpty(executable) &&
+                string.Equals(Native.ProcessImage(candidate), executable, StringComparison.OrdinalIgnoreCase)) owner = candidate;
+            EnumWindows((window, _) =>
+            {
+                if (IsWindowVisible(window) && IsMenu(window)) existing.Add(window);
+                return true;
+            }, 0);
+        }
+
+        internal bool WaitForMenu()
+        {
+            for (int attempt = 0; attempt < 22; attempt++)
+            {
+                EnumWindows((window, _) => !TryObserve(window), 0);
+                if (Menu != 0) return true;
+                Thread.Sleep(25);
+            }
+            return false;
+        }
+
+        private bool TryObserve(nint window)
+        {
+            if (window == 0 || existing.Contains(window) || !IsWindowVisible(window) || !IsMenu(window) ||
+                !GetWindowRect(window, out var bounds)) return false;
+            uint process = Native.WindowProcessId(window);
+            if ((owner == 0 || process != owner) &&
+                (string.IsNullOrEmpty(executable) || !string.Equals(Native.ProcessImage(process), executable, StringComparison.OrdinalIgnoreCase)))
+                return false;
+            int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
+            if (width <= 0 || height <= 0) return false;
+            Point position = MenuPosition(Anchor, WorkingArea(Anchor), width, height);
+            SetWindowPos(window, 0, (int)position.X, (int)position.Y, 0, 0, 0x15);
+            Menu = window;
+            return true;
+        }
+
+        private bool IsMenu(nint window)
+        {
+            className.Clear();
+            return GetClassName(window, className, className.Capacity) != 0 && className.ToString() == "#32768";
+        }
     }
 }

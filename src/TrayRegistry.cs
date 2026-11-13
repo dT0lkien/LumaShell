@@ -40,13 +40,16 @@ internal static class TrayRegistry
             if (missing.Count == 0) return [];
             var names = missing.Keys.Select(Path.GetFileNameWithoutExtension).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var found = new List<TraySnapshot.Item>();
+            using var current = Process.GetCurrentProcess();
+            int session = current.SessionId;
             foreach (var process in Process.GetProcesses())
             {
                 using (process)
                 {
                     try
                     {
-                        if (!names.Contains(process.ProcessName) || Native.ProcessImage((uint)process.Id) is not { } executable ||
+                        if (!names.Contains(process.ProcessName) || process.SessionId != session ||
+                            Native.ProcessImage((uint)process.Id) is not { } executable ||
                             !missing.Remove(executable, out var saved)) continue;
                         if (GetIcon(root, saved) is { } image)
                             found.Add(new($"saved:{saved.Path}", saved.Path, saved.Title, saved.Pinned, image, true, Uid: saved.Uid ?? 0, IconGuid: saved.IconGuid, HasUid: saved.Uid.HasValue));

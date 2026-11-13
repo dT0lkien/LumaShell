@@ -163,6 +163,8 @@ internal sealed class Launcher
         if (window.IsVisible) window.Hide();
     }
 
+    internal bool IsOpen => window.IsVisible;
+
     private void CloseIfUnfocused()
     {
         if (!window.IsActive && context?.IsOpen != true) Close();
