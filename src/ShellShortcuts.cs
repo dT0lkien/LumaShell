@@ -114,11 +114,31 @@ internal sealed class ShellShortcuts : IDisposable
 
     private nint Next(int code, nint message, nint data) => CallNextHookEx(hook, code, message, data);
 
+    internal static bool SendTaskManagerShortcut()
+    {
+        const ushort control = 0x11, shift = 0x10, escape = 0x1B;
+        if (Down(control) || Down(shift) || Down(escape) || Down(0x12) || Down(0x5B) || Down(0x5C)) return false;
+        var inputs = new[]
+        {
+            ShortcutKey(control), ShortcutKey(shift), ShortcutKey(escape),
+            ShortcutKey(escape, up: true), ShortcutKey(shift, up: true), ShortcutKey(control, up: true)
+        };
+        int size = Marshal.SizeOf<Input>();
+        uint sent = SendInput((uint)inputs.Length, inputs, size);
+        if (sent is > 0 and < 6) SendInput(3, inputs[3..], size);
+        return sent == inputs.Length;
+    }
+
+    private static Input ShortcutKey(ushort key, bool up = false) => new()
+    {
+        Type = 1,
+        Data = new() { Key = new() { Key = key, Flags = up ? 2u : 0u, Extra = ReplayMarker } }
+    };
+
     private static bool SendActivationHotkey(ushort key)
     {
-        var down = new Input { Type = 1, Data = new() { Key = new() { Key = key, Extra = ReplayMarker } } };
-        var up = down;
-        up.Data.Key.Flags = 2;
+        var down = ShortcutKey(key);
+        var up = ShortcutKey(key, up: true);
         int size = Marshal.SizeOf<Input>();
         uint sent = SendInput(2, [down, up], size);
         if (sent == 1) SendInput(1, [up], size);

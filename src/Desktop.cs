@@ -58,6 +58,7 @@ internal sealed class Desktop
     private string[] dynamicPaths = [];
     private nint foreground;
     private nint finderHandle;
+    private bool openingTaskManager;
 
     internal Window MenuBar { get; } = Overlay("Luma • Строка меню", 800, BarHeight);
     internal Window DockWindow { get; } = Overlay("Luma • Dock", 1120, 145);
@@ -201,11 +202,28 @@ internal sealed class Desktop
     {
         foreach (var window in Native.OpenWindows().Take(16))
         {
-            var item = Entry(Label(window.Title, 60), async () => await Native.FocusWindow(window.Handle));
+            var item = Entry(Label(window.Title, 60), async () =>
+            {
+                if (Native.IsTaskManager(window.Path)) await OpenTaskManager(window.Handle);
+                else await Native.FocusWindow(window.Handle);
+            });
             if (window.Handle == foreground) item.FontWeight = FontWeights.Bold;
             yield return item;
         }
-        yield return Entry("Диспетчер задач", () => Launch("taskmgr.exe"));
+        yield return Entry("Диспетчер задач", async () => await OpenTaskManager());
+    }
+
+    private async Task OpenTaskManager(nint window = 0)
+    {
+        if (openingTaskManager) return;
+        openingTaskManager = true;
+        try
+        {
+            await DockWindow.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Input);
+            if (!await Native.OpenTaskManager(window))
+                feedback.Text = "Не удалось открыть Диспетчер задач. Нажми Ctrl+Shift+Esc.";
+        }
+        finally { openingTaskManager = false; }
     }
 
     private void PickPin()
@@ -669,6 +687,11 @@ internal sealed class Desktop
                 windows.Where(item => MatchesWindow(pin, item) && Native.WindowMatches(item))
                     .OrderByDescending(item => recentWindows.TryGetValue(item.Path, out nint window) && window == item.Handle).FirstOrDefault();
             string executable = pin.Location ?? pin.Target;
+            if (Native.IsTaskManager(executable) || Native.IsTaskManager(match?.Path))
+            {
+                await OpenTaskManager(match?.Handle ?? 0);
+                return false;
+            }
             if (Launcher.IsPrismTarget(pin.Target, executable) &&
                 await Prism.OpenRunning(Prism.IsTrayClient(executable) ? executable : null,
                     match?.Handle ?? 0, InvokeTrayIcon) is { } prismOpened)

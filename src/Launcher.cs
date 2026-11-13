@@ -291,6 +291,12 @@ internal sealed class Launcher
         launching = true;
         try
         {
+            if (Native.IsTaskManager(item.Target) || Native.IsTaskManager(item.Location))
+            {
+                if (await Native.OpenTaskManager()) { Remember(item); Close(); }
+                else if (window.IsVisible) status.Text = "Не удалось открыть Диспетчер задач. Нажми Ctrl+Shift+Esc.";
+                return;
+            }
             if (IsPrismTarget(item.Target, item.Location) &&
                 await Prism.OpenRunning(Prism.IsTrayClient(item.Location ?? "") ? item.Location : null, invokeTray: InvokeTray) is { } opened)
             {

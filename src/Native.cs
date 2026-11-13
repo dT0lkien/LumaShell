@@ -10,6 +10,7 @@ namespace LumaShell;
 
 internal static class Native
 {
+    private static readonly string TaskManagerPath = Path.Combine(Environment.SystemDirectory, "Taskmgr.exe");
     internal const int HotkeyMessage = 0x0312;
     internal const int ClipboardMessage = 0x031D;
     internal const int IslandHotkey = 1;
@@ -172,6 +173,38 @@ internal static class Native
             await Task.Delay(45);
         }
         return false;
+    }
+
+    internal static bool IsTaskManager(string? target)
+    {
+        return string.Equals(target, TaskManagerPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(target, "taskmgr.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static async Task<bool> OpenTaskManager(nint existing = 0)
+    {
+        if (IsTaskManagerForeground()) return true;
+        if (existing != 0 && IsTaskManager(Executable(existing)) && await FocusWindow(existing)) return true;
+        if (ShellShortcuts.SendTaskManagerShortcut() && await WaitForTaskManager(20)) return true;
+        if (Desktop.Launch(TaskManagerPath) && await WaitForTaskManager(35)) return true;
+        SessionLog.Write("Task Manager did not become the foreground window after the Windows shortcut and shell launch.");
+        return false;
+    }
+
+    private static async Task<bool> WaitForTaskManager(int attempts)
+    {
+        for (int attempt = 0; attempt < attempts; attempt++)
+        {
+            if (IsTaskManagerForeground()) return true;
+            await Task.Delay(60);
+        }
+        return IsTaskManagerForeground();
+    }
+
+    private static bool IsTaskManagerForeground()
+    {
+        nint window = GetForegroundWindow();
+        return IsApplicationWindowShown(window) && IsTaskManager(Executable(window));
     }
 
     internal static string? Executable(nint window)

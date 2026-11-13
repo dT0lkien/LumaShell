@@ -66,6 +66,7 @@ internal static class FinderPreview
             VerifyTrayActions(assembly);
             VerifyAppIdentification(assembly, sandbox);
             VerifyHiddenWindow(assembly);
+            VerifyTaskManager(assembly, window);
             VerifyFolderShortcut(assembly);
 
             string plan = Path.Combine(projects, "План.txt");
@@ -96,6 +97,44 @@ internal static class FinderPreview
             window.Close();
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
+        }
+    }
+
+    private static void VerifyTaskManager(Assembly assembly, Window owner)
+    {
+        var native = assembly.GetType("LumaShell.Native", throwOnError: true)!;
+        var open = native.GetMethod("OpenTaskManager", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var isTaskManager = native.GetMethod("IsTaskManager", BindingFlags.Static | BindingFlags.NonPublic)!;
+        string path = Path.Combine(Environment.SystemDirectory, "Taskmgr.exe");
+        if (!(bool)isTaskManager.Invoke(null, [path])! ||
+            (bool)isTaskManager.Invoke(null, [Path.Combine(Path.GetTempPath(), "Taskmgr.exe")])!)
+            throw new InvalidOperationException("Task Manager routing matched the wrong executable.");
+        owner.Activate();
+        var previous = Process.GetProcessesByName("Taskmgr");
+        var previousIds = previous.Select(process => process.Id).ToHashSet();
+        foreach (var process in previous) process.Dispose();
+        try
+        {
+            var activation = (Task<bool>)open.Invoke(null, [(nint)0])!;
+            PumpUntil(() => activation.IsCompleted, "opening Windows Task Manager");
+            if (!activation.GetAwaiter().GetResult())
+                throw new InvalidOperationException("The Task Manager command did not open a foreground window.");
+            nint handle = GetForegroundWindow();
+            ShowWindowAsync(handle, 6);
+            PumpUntil(() => IsIconic(handle), "minimizing the Task Manager window");
+            owner.Activate();
+            // Exercise Windows' own shortcut while the Task Manager already exists and is minimized.
+            activation = (Task<bool>)open.Invoke(null, [(nint)0])!;
+            PumpUntil(() => activation.IsCompleted, "restoring the Task Manager window");
+            if (!activation.GetAwaiter().GetResult() || IsIconic(handle) || GetForegroundWindow() != handle)
+                throw new InvalidOperationException("The Task Manager command did not restore the same window.");
+            Console.WriteLine("The Task Manager command opened and restored the same minimized Task Manager window.");
+        }
+        finally
+        {
+            foreach (var process in Process.GetProcessesByName("Taskmgr"))
+                using (process) if (!previousIds.Contains(process.Id)) process.CloseMainWindow();
+            owner.Activate();
         }
     }
 
@@ -376,6 +415,12 @@ internal static class FinderPreview
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(nint window, StringBuilder name, int capacity);
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(nint window);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(nint window, int command);
     [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")]
