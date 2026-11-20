@@ -20,6 +20,8 @@ internal sealed class ShellShortcuts : IDisposable
     private Input heldWin;
     private nint hook;
     private bool suppressS;
+    private int pressedWin;
+    private int pressedShift;
     internal bool Snip { get; private set; }
     internal bool Launcher { get; private set; }
     internal bool Finder { get; private set; }
@@ -67,10 +69,15 @@ internal sealed class ShellShortcuts : IDisposable
         bool down = message is 0x100 or 0x104;
         bool up = message is 0x101 or 0x105;
         if (!down && !up) return Next(code, message, data);
+        int winBit = key is 0x5B or 0x5C ? 1 << (key - 0x5B) : 0;
+        int shiftBit = key switch { 0xA0 => 1, 0xA1 => 2, 0x10 => 4, _ => 0 };
+        pressedWin = down ? pressedWin | winBit : pressedWin & ~winBit;
+        pressedShift = down ? pressedShift | shiftBit : pressedShift & ~shiftBit;
         bool win = key is 0x5B or 0x5C;
-        bool modified = win && down && (Down(0x10) || Down(0x11) || Down(0x12) || Down(key == 0x5B ? 0x5C : 0x5B));
+        bool shift = pressedShift != 0 || Down(0x10);
+        bool modified = win && down && (shift || Down(0x11) || Down(0x12) || (pressedWin & ~winBit) != 0);
         bool intercept = Launcher && LauncherAvailable;
-        bool snipChord = key == 0x53 && Snip && Down(0x10) && !Down(0x11) && !Down(0x12);
+        bool snipChord = key == 0x53 && Snip && shift && !Down(0x11) && !Down(0x12);
         switch (tap.Handle(key, down, intercept, modified, Finder && FinderAvailable, snipChord))
         {
             case WinTap.Action.Hold:
@@ -86,7 +93,7 @@ internal sealed class ShellShortcuts : IDisposable
                     ui.BeginInvoke(DispatcherPriority.Input, openFinder);
                 return 1;
             case WinTap.Action.Capture:
-                ui.BeginInvoke(DispatcherPriority.Input, capture);
+                StartCapture();
                 return 1;
             case WinTap.Action.Suppress:
                 return 1;
@@ -102,15 +109,17 @@ internal sealed class ShellShortcuts : IDisposable
         if (key == 0x53)
         {
             if (up && suppressS) { suppressS = false; return 1; }
-            if (down && (suppressS || snipChord && (Down(0x5B) || Down(0x5C))))
+            if (down && (suppressS || snipChord && (pressedWin != 0 || Down(0x5B) || Down(0x5C))))
             {
-                if (!suppressS) ui.BeginInvoke(DispatcherPriority.Normal, capture);
+                if (!suppressS) StartCapture();
                 suppressS = true;
                 return 1;
             }
         }
         return Next(code, message, data);
     }
+
+    private void StartCapture() => ui.BeginInvoke(DispatcherPriority.Input, capture);
 
     private nint Next(int code, nint message, nint data) => CallNextHookEx(hook, code, message, data);
 

@@ -34,6 +34,7 @@ internal sealed class FinderWindow : Window
     private static readonly Brush Accent = Paint("#FF84C8FF");
     private static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private const string FolderGlyph = "M1,5 H8 L10,7 H19 V17 H1 Z";
+    private const string FinderDragFormat = "Luma Finder.Source";
     private readonly ListView list = new()
     {
         Background = Brushes.Transparent, BorderThickness = new Thickness(0),
@@ -64,10 +65,17 @@ internal sealed class FinderWindow : Window
     private bool showingItemMenu;
     private bool closed;
     private QuickLook? preview;
+    private readonly string? pickerTitle;
+    private Button? chooseFolder;
+    private string? pickedFolder;
+    private Point? dragStart;
 
-    internal FinderWindow()
+    internal FinderWindow() : this(null) { }
+
+    private FinderWindow(string? pickerTitle)
     {
-        Title = "Luma Finder";
+        this.pickerTitle = pickerTitle;
+        Title = pickerTitle ?? "Luma Finder";
         Width = 1060;
         Height = 650;
         MinWidth = 730;
@@ -92,7 +100,8 @@ internal sealed class FinderWindow : Window
         var sidebar = new DockPanel();
         var lights = new StackPanel { Orientation = Orientation.Horizontal, Height = 43, Margin = new Thickness(12, 0, 0, 0) };
         lights.Children.Add(Light("#FFFF605C", "Закрыть окно", Close));
-        lights.Children.Add(Light("#FFFFBD44", "Свернуть окно", () => WindowState = WindowState.Minimized));
+        if (pickerTitle is null)
+            lights.Children.Add(Light("#FFFFBD44", "Свернуть окно", () => WindowState = WindowState.Minimized));
         lights.Children.Add(Light("#FF29C951", "Развернуть или восстановить окно",
             () => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized));
         DockPanel.SetDock(lights, Dock.Top);
@@ -143,7 +152,8 @@ internal sealed class FinderWindow : Window
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 8, 0) };
         actions.Children.Add(Tool("M2,4 H18 M2,10 H14 M2,16 H10", "Сортировать файлы", ShowSortMenu));
-        actions.Children.Add(Tool("M3,10 H4 M9,10 H10 M15,10 H16", "Действия с папкой", ShowFolderMenu));
+        if (pickerTitle is null)
+            actions.Children.Add(Tool("M3,10 H4 M9,10 H10 M15,10 H16", "Действия с папкой", ShowFolderMenu));
         var actionSurface = Pill(actions);
         DockPanel.SetDock(actionSurface, Dock.Right);
         var searchLayout = new DockPanel();
@@ -177,6 +187,23 @@ internal sealed class FinderWindow : Window
         pathBar.SizeChanged += (_, _) => pathScroll.ScrollToRightEnd();
         footerContent.Children.Add(pathScroll);
         var footer = new Border { Height = 32, BorderBrush = Stroke, BorderThickness = new Thickness(0, 1, 0, 0), Child = footerContent };
+        if (pickerTitle is not null)
+        {
+            list.SelectionMode = SelectionMode.Single;
+            var controls = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(10, 7, 10, 8) };
+            controls.Children.Add(Button("Отмена", Close, ToolColor));
+            chooseFolder = Button("Выбрать папку", () =>
+            {
+                pickedFolder = (list.SelectedItem as FinderEntry)?.Path ?? folder;
+                if (pickedFolder is not null) DialogResult = true;
+            }, Paint("#FF295C88"));
+            chooseFolder.IsEnabled = false;
+            chooseFolder.Margin = new Thickness(7, 0, 0, 0);
+            controls.Children.Add(chooseFolder);
+            DockPanel.SetDock(controls, Dock.Bottom);
+            content.Children.Add(controls);
+        }
         DockPanel.SetDock(footer, Dock.Bottom);
         content.Children.Add(footer);
         content.Children.Add(list);
@@ -211,6 +238,15 @@ internal sealed class FinderWindow : Window
     }
 
     internal nint Handle => new WindowInteropHelper(this).Handle;
+
+    internal static string? PickFolder(string title, string initial)
+    {
+        var window = new FinderWindow(title) { ShowInTaskbar = false };
+        string? parent = Path.GetDirectoryName(initial);
+        window.Loaded += (_, _) => window.Navigate(Directory.Exists(initial) ? initial :
+            Directory.Exists(parent) ? parent! : Home);
+        return window.ShowDialog() == true ? window.pickedFolder : null;
+    }
 
     private void ApplyBackdrop(WindowChrome chrome, Border frame, Border sidebar)
     {
@@ -375,6 +411,26 @@ internal sealed class FinderWindow : Window
         {
             if (RowUnder(args.OriginalSource) is not null) OpenSelected();
         };
+        list.SelectionChanged += (_, _) => UpdateStatus();
+        if (pickerTitle is not null) return;
+        list.PreviewMouseLeftButtonDown += (_, args) =>
+            dragStart = RowUnder(args.OriginalSource) is null ? null : args.GetPosition(list);
+        list.PreviewMouseMove += (_, args) =>
+        {
+            if (args.LeftButton != MouseButtonState.Pressed) { dragStart = null; return; }
+            if (dragStart is not { } start) return;
+            var pointer = args.GetPosition(list);
+            if (Math.Abs(pointer.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                Math.Abs(pointer.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+            dragStart = null;
+            if (SelectedPaths() is { Length: > 0 } paths)
+            {
+                var data = new DataObject(DataFormats.FileDrop, paths);
+                data.SetData(FinderDragFormat, true);
+                DragDrop.DoDragDrop(list, data, DragDropEffects.Copy);
+            }
+            args.Handled = true;
+        };
         list.PreviewMouseRightButtonDown += (_, args) =>
         {
             if (RowUnder(args.OriginalSource) is { IsSelected: false } row)
@@ -383,7 +439,6 @@ internal sealed class FinderWindow : Window
                 row.IsSelected = true;
             }
         };
-        list.SelectionChanged += (_, _) => UpdateStatus();
         list.PreviewMouseRightButtonUp += (_, args) =>
         {
             args.Handled = true;
@@ -408,6 +463,7 @@ internal sealed class FinderWindow : Window
     }
 
     private string? DragTarget(DragEventArgs args) => !copying && args.Data.GetDataPresent(DataFormats.FileDrop)
+        && !args.Data.GetDataPresent(FinderDragFormat)
         ? RowUnder(args.OriginalSource) is { Content: FinderEntry { IsDirectory: true } item } ? item.Path : folder
         : null;
 
@@ -564,7 +620,7 @@ internal sealed class FinderWindow : Window
                 string name = Path.GetFileName(destination);
                 heading.Text = string.IsNullOrEmpty(name) ? destination : name;
                 heading.ToolTip = destination;
-                Title = $"{heading.Text} • Luma Finder";
+                Title = pickerTitle ?? $"{heading.Text} • Luma Finder";
                 UpdateNavigation();
                 UpdatePathBar(destination);
                 WatchFolder(destination);
@@ -695,7 +751,8 @@ internal sealed class FinderWindow : Window
     private void RenderEntries()
     {
         string filter = search.Text.Trim();
-        var matching = entries.Where(entry => filter.Length == 0 || entry.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase))
+        var matching = entries.Where(entry => (pickerTitle is null || entry.IsDirectory) &&
+                (filter.Length == 0 || entry.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase)))
             .OrderByDescending(entry => entry.IsDirectory);
         var ordered = sort switch
         {
@@ -712,6 +769,7 @@ internal sealed class FinderWindow : Window
 
     private void UpdateStatus()
     {
+        if (chooseFolder is not null) chooseFolder.IsEnabled = folder is not null;
         int count = list.Items.Count;
         string total = search.Text.Length == 0 ? $"Объектов: {count}" : $"Найдено: {count} из {entries.Length}";
         status.Text = list.SelectedItems.Count == 0 ? total : $"{total}   ·   Выбрано: {list.SelectedItems.Count}";
@@ -896,12 +954,13 @@ internal sealed class FinderWindow : Window
 
     private void OnKey(object sender, KeyEventArgs args)
     {
-        if (Keyboard.Modifiers == ModifierKeys.Control)
+        if (pickerTitle is not null && args.Key == Key.Escape && !address.IsKeyboardFocusWithin) Close();
+        else if (Keyboard.Modifiers == ModifierKeys.Control)
         {
             if (args.Key == Key.L) StartAddress();
             else if (args.Key == Key.F) { Keyboard.Focus(search); search.SelectAll(); }
             else if (args.Key == Key.C && !search.IsKeyboardFocusWithin && !address.IsKeyboardFocusWithin) CopySelected();
-            else if (args.Key == Key.V && !search.IsKeyboardFocusWithin && !address.IsKeyboardFocusWithin) Paste();
+            else if (args.Key == Key.V && pickerTitle is null && !search.IsKeyboardFocusWithin && !address.IsKeyboardFocusWithin) Paste();
             else return;
         }
         else if (Keyboard.Modifiers == ModifierKeys.Alt && args.SystemKey is Key.Left or Key.Right or Key.Up)
@@ -910,8 +969,8 @@ internal sealed class FinderWindow : Window
             else GoHistory(args.SystemKey == Key.Left ? -1 : 1);
         }
         else if (args.Key == Key.F5) Reload();
-        else if (args.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.None && list.IsKeyboardFocusWithin) ToggleQuickLook();
-        else if (list.IsKeyboardFocusWithin && (args.Key == Key.Apps || args.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift))
+        else if (pickerTitle is null && args.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.None && list.IsKeyboardFocusWithin) ToggleQuickLook();
+        else if (pickerTitle is null && list.IsKeyboardFocusWithin && (args.Key == Key.Apps || args.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift))
         {
             if (list.ItemContainerGenerator.ContainerFromItem(list.SelectedItem) is ListViewItem row && row.IsVisible)
                 ShowSelectedMenu(row.PointToScreen(new Point(16, row.ActualHeight)));

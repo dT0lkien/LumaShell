@@ -83,7 +83,7 @@ internal sealed class App : Application
     protected override void OnStartup(StartupEventArgs args)
     {
         base.OnStartup(args);
-        screenshots = new Screenshots(preferences);
+        screenshots = new Screenshots(preferences, OpenFinder);
         activity = new Activity();
         prism = new Prism(preferences);
         network = new PublicNetwork();

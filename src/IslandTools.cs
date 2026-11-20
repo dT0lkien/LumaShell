@@ -109,7 +109,8 @@ internal sealed partial class Island
         foreach (string path in paths)
         {
             string name = Path.GetFileNameWithoutExtension(path);
-            string label = name.Length >= 24 ? name[5..24].Replace('_', ' ') : name;
+            string label = name.StartsWith("Luma-", StringComparison.Ordinal) && name.Length >= 24
+                ? name[5..24].Replace('_', ' ') : Label(name, 36);
             var preview = new Image { Width = 62, Height = 37, Stretch = Stretch.Uniform };
             RenderOptions.SetBitmapScalingMode(preview, BitmapScalingMode.HighQuality);
             var thumbnail = Surface(Paint("#FF2C303B"), 6, preview);

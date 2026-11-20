@@ -290,15 +290,19 @@ internal sealed class TrayIcons
     {
         if (busy || openingWindow || !popup.IsOpen || nativeMenu != 0) return;
         SetStatus("");
-        if (button is not null) ShowActions(item, button);
-        if (TrayAppActions.IsLuma(item.Path)) return;
-        double y = button?.TranslatePoint(new Point(), trayPanel).Y ?? actionPanel.Margin.Top;
+        var row = button ?? entries.Children.OfType<Button>().FirstOrDefault(candidate => Equals(candidate.Tag, item));
+        if (row is null) return;
+        if (TrayAppActions.IsLuma(item.Path)) { ShowActions(item, row); return; }
+        double y = row.TranslatePoint(new Point(), trayPanel).Y;
         var anchor = trayPanel.PointToScreen(new Point(0, Math.Max(0, y)));
+        var trayBounds = new Rect(trayPanel.PointToScreen(new Point()),
+            trayPanel.PointToScreen(new Point(trayPanel.ActualWidth, trayPanel.ActualHeight)));
+        HideActions();
         busy = true;
         popup.StaysOpen = true;
         try
         {
-            nint menu = await Task.Run(() => NativeTrayMenu.ShowContextMenu(item, anchor));
+            nint menu = await Task.Run(() => NativeTrayMenu.ShowContextMenu(item, anchor, trayBounds));
             if (!popup.IsOpen) return;
             if (NativeTrayMenu.IsMenuOpen(menu))
             {
@@ -307,7 +311,11 @@ internal sealed class TrayIcons
                 SetStatus("");
                 menuTimer.Start();
             }
-            else SetStatus("Родное меню недоступно. Действия Luma — слева.");
+            else
+            {
+                ShowActions(item, row);
+                SetStatus("Действия приложения");
+            }
         }
         finally
         {

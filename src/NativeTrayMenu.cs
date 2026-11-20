@@ -9,9 +9,9 @@ namespace LumaShell;
 
 internal static class NativeTrayMenu
 {
-    internal static nint ShowContextMenu(TraySnapshot.Item item, Point anchor)
+    internal static nint ShowContextMenu(TraySnapshot.Item item, Point anchor, Rect tray)
     {
-        var placement = new ClassicMenuAnchor(item, anchor);
+        var placement = new MenuAnchor(item, anchor, tray);
         TryActivate(item, placement, anchor, doubleClick: false);
         return placement.Menu;
     }
@@ -28,7 +28,7 @@ internal static class NativeTrayMenu
                 "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow";
     }
 
-    private static bool TryActivate(TraySnapshot.Item item, ClassicMenuAnchor? context, Point anchor, bool doubleClick)
+    private static bool TryActivate(TraySnapshot.Item item, MenuAnchor? context, Point anchor, bool doubleClick)
     {
         object? automation = null;
         var candidates = new List<(IUIAutomationElement Element, bool Exact, nint Surface)>();
@@ -94,7 +94,7 @@ internal static class NativeTrayMenu
                     menu.ShowContextMenu();
                 }
                 // UI Automation can return success for a parent menu. Only accept the target app's menu.
-                return context.WaitForMenu();
+                return context.WaitForMenu(client);
             }
             if (!ClickElement(client, element, surface, right: false, doubleClick) && (doubleClick || !InvokePrimary(element)))
                 return false;
@@ -423,60 +423,104 @@ internal static class NativeTrayMenu
         return new Point(Math.Max(area.Left, (int)anchor.X - width - gap), top);
     }
 
-    private sealed class ClassicMenuAnchor
+    internal static Point MenuPositionOutsideTray(Point anchor, Rect tray, System.Drawing.Rectangle area, int width, int height)
+    {
+        const int gap = 8;
+        if (tray.Left - gap - width >= area.Left) return MenuPosition(anchor, area, width, height);
+        int y = Math.Clamp((int)anchor.Y, area.Top, Math.Max(area.Top, area.Bottom - height));
+        int x = Math.Clamp((int)tray.Left, area.Left, Math.Max(area.Left, area.Right - width));
+        if (tray.Right + gap + width <= area.Right) return new Point(tray.Right + gap, y);
+        if (tray.Bottom + gap + height <= area.Bottom) return new Point(x, tray.Bottom + gap);
+        if (tray.Top - gap - height >= area.Top) return new Point(x, tray.Top - gap - height);
+        return MenuPosition(anchor, area, width, height);
+    }
+
+    private sealed class MenuAnchor
     {
         private readonly uint owner;
         private readonly string executable;
         private readonly HashSet<nint> existing = [];
-        private readonly System.Text.StringBuilder className = new(24);
+        private readonly Dictionary<nint, (int Count, long Next)> menuProbes = [];
+        private readonly Rect tray;
+        private readonly System.Text.StringBuilder className = new(96);
         internal Point Anchor { get; }
         internal nint Menu { get; private set; }
 
-        internal ClassicMenuAnchor(TraySnapshot.Item item, Point anchor)
+        internal MenuAnchor(TraySnapshot.Item item, Point anchor, Rect tray)
         {
             Anchor = anchor;
+            this.tray = tray;
             executable = item.OwnerExecutable ?? item.Path;
             uint candidate = Native.WindowProcessId(item.Owner);
             if (candidate != 0 && !string.IsNullOrEmpty(executable) &&
                 string.Equals(Native.ProcessImage(candidate), executable, StringComparison.OrdinalIgnoreCase)) owner = candidate;
             EnumWindows((window, _) =>
             {
-                if (IsWindowVisible(window) && IsMenu(window)) existing.Add(window);
+                if (IsWindowVisible(window)) existing.Add(window);
                 return true;
             }, 0);
         }
 
-        internal bool WaitForMenu()
+        internal bool WaitForMenu(IUIAutomation client)
         {
-            for (int attempt = 0; attempt < 22; attempt++)
+            for (int attempt = 0; attempt < 32; attempt++)
             {
-                EnumWindows((window, _) => !TryObserve(window), 0);
+                EnumWindows((window, _) => !TryObserve(client, window), 0);
                 if (Menu != 0) return true;
                 Thread.Sleep(25);
             }
             return false;
         }
 
-        private bool TryObserve(nint window)
+        private bool TryObserve(IUIAutomation client, nint window)
         {
-            if (window == 0 || existing.Contains(window) || !IsWindowVisible(window) || !IsMenu(window) ||
+            if (window == 0 || existing.Contains(window) || !IsWindowVisible(window) ||
                 !GetWindowRect(window, out var bounds)) return false;
             uint process = Native.WindowProcessId(window);
             if ((owner == 0 || process != owner) &&
                 (string.IsNullOrEmpty(executable) || !string.Equals(Native.ProcessImage(process), executable, StringComparison.OrdinalIgnoreCase)))
                 return false;
             int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
-            if (width <= 0 || height <= 0) return false;
-            Point position = MenuPosition(Anchor, WorkingArea(Anchor), width, height);
+            if (width <= 0 || height <= 0 || !IsMenu(client, window)) return false;
+            Point position = MenuPositionOutsideTray(Anchor, tray, WorkingArea(Anchor), width, height);
             SetWindowPos(window, 0, (int)position.X, (int)position.Y, 0, 0, 0x15);
             Menu = window;
             return true;
         }
 
-        private bool IsMenu(nint window)
+        private bool IsMenu(IUIAutomation client, nint window)
         {
             className.Clear();
-            return GetClassName(window, className, className.Capacity) != 0 && className.ToString() == "#32768";
+            if (GetClassName(window, className, className.Capacity) == 0) return false;
+            if (className.ToString() == "#32768") return true;
+            const uint popup = 0x80000000, caption = 0x00C00000;
+            if (((uint)GetWindowLong(window, -16) & (popup | caption)) != popup) return false;
+            menuProbes.TryGetValue(window, out var probe);
+            long now = Environment.TickCount64;
+            if (probe.Count >= 3 || now < probe.Next) return false;
+            menuProbes[window] = (probe.Count + 1, now + 120);
+
+            IUIAutomationElement? root = null, menuItem = null;
+            IUIAutomationCondition? condition = null;
+            try
+            {
+                root = client.ElementFromHandle(window);
+                if (root is null) return false;
+                if (root.CurrentControlType == 50009) return true; // Menu
+                condition = client.CreatePropertyCondition(30003, 50011); // MenuItem
+                menuItem = root.FindFirst(TreeScope.TreeScope_Descendants, condition);
+                return menuItem is not null;
+            }
+            catch (COMException) { return false; }
+            finally
+            {
+                if (menuItem is not null) Marshal.ReleaseComObject(menuItem);
+                if (condition is not null) Marshal.ReleaseComObject(condition);
+                if (root is not null) Marshal.ReleaseComObject(root);
+            }
         }
     }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowLong(nint window, int index);
 }

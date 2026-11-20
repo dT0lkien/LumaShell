@@ -291,6 +291,12 @@ internal static class FinderPreview
         var area = new System.Drawing.Rectangle(-1920, 40, 1920, 1040);
         var actual = (Point)position.Invoke(null, [new Point(-280, 1040), area, 210, 160])!;
         if (actual != new Point(-498, 920)) throw new InvalidOperationException("The native menu did not fit to the left on a secondary display.");
+        var outside = native.GetMethod("MenuPositionOutsideTray", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var narrow = new System.Drawing.Rectangle(0, 0, 565, 900);
+        var tray = new Rect(241, 20, 268, 389);
+        var below = (Point)outside.Invoke(null, [new Point(241, 371), tray, narrow, 303, 337])!;
+        if (new Rect(below, new Size(303, 337)).IntersectsWith(tray))
+            throw new InvalidOperationException("The native menu overlapped a tray too close to the left edge.");
     }
 
     private static void VerifyLauncherMenu(Assembly assembly, string executable)

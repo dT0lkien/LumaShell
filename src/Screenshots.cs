@@ -16,20 +16,39 @@ using static LumaShell.Visuals;
 
 namespace LumaShell;
 
-internal sealed class Screenshots(Preferences settings)
+internal sealed class Screenshots(Preferences settings, Action<string> openFolder)
 {
+    private static readonly Guid WindowsScreenshotsId = new("B7BEDE81-DF94-4682-A7D8-57A52620B86F");
+    private readonly string windowsFolder = ResolveWindowsFolder();
+    private readonly string legacyFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Luma Screenshots");
     private bool busy;
     internal bool Busy => busy;
-    internal string Folder => settings.ScreenshotFolder ?? Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Luma Screenshots");
+    internal string Folder => settings.ScreenshotFolder ?? windowsFolder;
     internal event Action? StateChanged;
     internal event Action<string>? Saved;
     internal event Action<string>? Failed;
 
-    internal string[] Recent()
+    internal string[] Recent() => new[] { Folder, windowsFolder, legacyFolder }
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .SelectMany(ListPngs)
+        .OrderByDescending(file => file.LastWriteTimeUtc)
+        .Take(4).Select(file => file.FullName).ToArray();
+
+    private static FileInfo[] ListPngs(string directory)
     {
-        try { return Directory.EnumerateFiles(Folder, "Luma-*.png").OrderDescending().Take(4).ToArray(); }
+        try { return new DirectoryInfo(directory).GetFiles("*.png"); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException) { return []; }
+    }
+
+    private static string ResolveWindowsFolder()
+    {
+        if (SHGetKnownFolderPath(WindowsScreenshotsId, 0x4000, 0, out nint address) == 0)
+        {
+            try { if (Marshal.PtrToStringUni(address) is { Length: > 0 } path) return path; }
+            finally { Marshal.FreeCoTaskMem(address); }
+        }
+        else Marshal.FreeCoTaskMem(address);
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Screenshots");
     }
 
     internal void OpenFolder()
@@ -37,7 +56,7 @@ internal sealed class Screenshots(Preferences settings)
         try
         {
             Directory.CreateDirectory(Folder);
-            Desktop.Launch(Folder);
+            openFolder(Folder);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         { Failed?.Invoke("Не удалось открыть папку снимков"); }
@@ -45,10 +64,8 @@ internal sealed class Screenshots(Preferences settings)
 
     internal bool ChooseFolder()
     {
-        var picker = new Microsoft.Win32.OpenFolderDialog { Title = "Папка для снимков Luma" };
-        if (Directory.Exists(Folder)) picker.InitialDirectory = Folder;
-        if (picker.ShowDialog() != true) return false;
-        settings.ScreenshotFolder = picker.FolderName;
+        if (FinderWindow.PickFolder("Папка для снимков Luma", Folder) is not { } folder) return false;
+        settings.ScreenshotFolder = folder;
         if (!settings.Save()) Failed?.Invoke("Папка выбрана до перезапуска Luma");
         return true;
     }
@@ -71,7 +88,10 @@ internal sealed class Screenshots(Preferences settings)
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ExternalException or
             InvalidOperationException or ArgumentException or OutOfMemoryException)
-        { Failed?.Invoke("Windows не удалось сохранить снимок"); }
+        {
+            SessionLog.Write($"Could not save screenshot: {error.Message}");
+            Failed?.Invoke("Не удалось сохранить снимок. Проверьте папку сохранения.");
+        }
         finally
         {
             busy = false;
@@ -208,4 +228,6 @@ internal sealed class Screenshots(Preferences settings)
 
     [DllImport("gdi32.dll")]
     private static extern bool DeleteObject(nint handle);
+    [DllImport("shell32.dll")]
+    private static extern int SHGetKnownFolderPath(in Guid id, uint flags, nint token, out nint path);
 }

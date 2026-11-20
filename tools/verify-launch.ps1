@@ -33,6 +33,15 @@ public static class LumaLaunchProbe
     [DllImport("user32")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("shell32", CharSet = CharSet.Unicode)] public static extern IntPtr ShellExecute(
         IntPtr owner, string verb, string file, string parameters, string directory, int show);
+    [DllImport("shell32")] static extern int SHGetKnownFolderPath(ref Guid id, uint flags, IntPtr token, out IntPtr path);
+
+    public static string ScreenshotFolder()
+    {
+        var id = new Guid("B7BEDE81-DF94-4682-A7D8-57A52620B86F");
+        int result = SHGetKnownFolderPath(ref id, 0x4000, IntPtr.Zero, out IntPtr path);
+        try { return result == 0 ? Marshal.PtrToStringUni(path) : null; }
+        finally { Marshal.FreeCoTaskMem(path); }
+    }
 
     public static bool WindowVisible(uint process, string expected)
     {
@@ -129,6 +138,39 @@ try {
         if ($launcher) { throw 'Escape did not close the Luma launcher.' }
     }
     Write-Host 'Both Win keys opened the Luma launcher, which received Escape.'
+
+    $shots = [LumaLaunchProbe]::ScreenshotFolder()
+    if (!$shots) { $shots = Join-Path ([Environment]::GetFolderPath('MyPictures')) 'Screenshots' }
+    foreach ($modifiers in @(@(0x5B, 0xA0), @(0xA0, 0x5C))) {
+        $before = @(Get-ChildItem -LiteralPath $shots -Filter 'Luma-*.png' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+        foreach ($key in $modifiers) {
+            [LumaLaunchProbe]::keybd_event($key, 0, [int]($key -in 0x5B,0x5C), [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 55
+        }
+        [LumaLaunchProbe]::keybd_event(0x53, 0, 0, [UIntPtr]::Zero)
+        [LumaLaunchProbe]::keybd_event(0x53, 0, 2, [UIntPtr]::Zero)
+        for ($i=1; $i -ge 0; $i--) {
+            $key = $modifiers[$i]
+            [LumaLaunchProbe]::keybd_event($key, 0, (2 + [int]($key -in 0x5B,0x5C)), [UIntPtr]::Zero)
+        }
+        $capturing = $false
+        for ($i = 0; $i -lt 30 -and !$capturing; $i++) {
+            Start-Sleep -Milliseconds 100
+            $capturing = [LumaLaunchProbe]::WindowVisible($process.Id, 'Luma • Снимок экрана')
+        }
+        if (!$capturing) { throw "Win+Shift+S did not open Luma with modifier order $modifiers." }
+        [LumaLaunchProbe]::keybd_event(0x0D, 0, 0, [UIntPtr]::Zero)
+        [LumaLaunchProbe]::keybd_event(0x0D, 0, 2, [UIntPtr]::Zero)
+        $image = $null
+        for ($i = 0; $i -lt 30 -and !$image; $i++) {
+            Start-Sleep -Milliseconds 100
+            $image = Get-ChildItem -LiteralPath $shots -Filter 'Luma-*.png' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notin $before -and $_.Length -gt 8 } | Select-Object -First 1
+        }
+        if (!$image) { throw 'Luma did not save the screenshot in the Windows screenshots folder.' }
+        Remove-Item -LiteralPath $image.FullName
+    }
+    Write-Host 'Win+Shift+S saved a PNG in the Windows screenshots folder in both modifier orders.'
 
     $result = [LumaLaunchProbe]::ShellExecute([IntPtr]::Zero, $null, $folder, $null, $null, 1)
     if ($result.ToInt64() -le 32) { throw "Windows failed to open the sample folder ($result)." }
