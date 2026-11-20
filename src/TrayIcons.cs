@@ -356,9 +356,7 @@ internal sealed class TrayIcons
         popup.StaysOpen = true;
         try
         {
-            Point anchor = popup.IsOpen ? trayPanel.PointToScreen(new Point()) :
-                toggle.IsVisible ? toggle.PointToScreen(new Point(0, toggle.ActualHeight + 7)) : NativeTrayMenu.CursorPosition();
-            bool sent = await Task.Run(() => NativeTrayMenu.Invoke(item, anchor, doubleClick));
+            bool sent = await Task.Run(() => NativeTrayMenu.Invoke(item, doubleClick));
             if (!sent) SessionLog.Write($"Tray action unavailable for {Path.GetFileName(item.Path)}.");
             return sent;
         }

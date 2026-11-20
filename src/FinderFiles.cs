@@ -8,7 +8,9 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace LumaShell;
 
@@ -83,6 +85,48 @@ internal static class FinderFiles
             if (apartment >= 0) CoUninitialize();
         }
     }
+
+    internal static ImageSource? ReadThumbnail(string path, int size)
+    {
+        int apartment = CoInitializeEx(0, 0);
+        if (apartment < 0 && apartment != unchecked((int)0x80010106)) return null;
+        ShellImageFactory? factory = null;
+        nint bitmap = 0;
+        try
+        {
+            Guid iid = typeof(ShellImageFactory).GUID;
+            if (SHCreateItemFromParsingName(path, 0, iid, out factory) < 0 || factory is null ||
+                factory.GetImage(new PixelSize(size, size), 0x08, out bitmap) < 0 || bitmap == 0) return null;
+            var image = Imaging.CreateBitmapSourceFromHBitmap(bitmap, 0, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+            image.Freeze();
+            return image;
+        }
+        catch (Exception error) when (error is ExternalException or InvalidOperationException or ArgumentException) { return null; }
+        finally
+        {
+            if (bitmap != 0) DeleteObject(bitmap);
+            if (factory is not null) Marshal.ReleaseComObject(factory);
+            if (apartment >= 0) CoUninitialize();
+        }
+    }
+
+    [ComImport, Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ShellImageFactory
+    {
+        [PreserveSig] int GetImage(PixelSize size, uint flags, out nint bitmap);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct PixelSize(int width, int height)
+    {
+        private readonly int width = width, height = height;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int SHCreateItemFromParsingName(string path, nint context, in Guid iid,
+        [MarshalAs(UnmanagedType.Interface)] out ShellImageFactory? factory);
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(nint bitmap);
 
     private static ImageSource Drawing(params (string Path, string Color)[] shapes)
     {

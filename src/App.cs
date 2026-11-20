@@ -293,6 +293,7 @@ internal sealed class App : Application
 
     private void PlaceWindows(bool force = false)
     {
+        if (!force && desktop.UsingNativeTray) return;
         var area = SystemParameters.WorkArea;
         if (Native.PrimaryWorkArea() is { } physical)
         {

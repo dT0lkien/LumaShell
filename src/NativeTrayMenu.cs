@@ -12,14 +12,15 @@ internal static class NativeTrayMenu
     internal static nint ShowContextMenu(TraySnapshot.Item item, Point anchor, Rect tray)
     {
         var placement = new MenuAnchor(item, anchor, tray);
-        TryActivate(item, placement, anchor, doubleClick: false);
+        TryActivate(item, placement, doubleClick: false);
+        if (placement.Menu == 0 && !placement.Dispatched)
+            TryActivate(item, placement, doubleClick: false, forceTaskbarLayout: true);
         return placement.Menu;
     }
 
-    internal static bool Invoke(TraySnapshot.Item item, Point anchor, bool doubleClick = false) =>
-        TryActivate(item, null, anchor, doubleClick);
+    internal static bool Invoke(TraySnapshot.Item item, bool doubleClick = false) =>
+        TryActivate(item, null, doubleClick);
     internal static bool IsMenuOpen(nint menu) => menu != 0 && IsWindowVisible(menu);
-    internal static Point CursorPosition() => GetCursorPos(out var cursor) ? new Point(cursor.X, cursor.Y) : new Point();
     internal static bool IsNativeSurface(nint window)
     {
         var name = new System.Text.StringBuilder(64);
@@ -28,12 +29,12 @@ internal static class NativeTrayMenu
                 "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow";
     }
 
-    private static bool TryActivate(TraySnapshot.Item item, MenuAnchor? context, Point anchor, bool doubleClick)
+    private static bool TryActivate(TraySnapshot.Item item, MenuAnchor? context, bool doubleClick,
+        bool forceTaskbarLayout = false)
     {
         object? automation = null;
         var candidates = new List<(IUIAutomationElement Element, bool Exact, nint Surface)>();
         nint overflow = 0;
-        RectPixels original = default;
         bool openedOverflow = false;
         TaskbarAccess? taskbar = null;
         try
@@ -47,7 +48,7 @@ internal static class NativeTrayMenu
             }
             nint primary = FindWindow("Shell_TrayWnd", null);
             if (primary == 0) return false;
-            taskbar = new TaskbarAccess(primary);
+            taskbar = new TaskbarAccess(primary, forceTaskbarLayout || context is null);
             overflow = OverflowWindow();
             bool positioned = TryIconBounds(item, out var iconBounds);
             FindMatches(client, primary, false, item.Title, positioned ? iconBounds : null, candidates);
@@ -59,19 +60,6 @@ internal static class NativeTrayMenu
             }
             if (overflow != 0)
             {
-                if (openedOverflow && GetWindowRect(overflow, out original))
-                {
-                    // Move a temporary overflow beside the Luma tray while Explorer handles the click.
-                    var area = WorkingArea(anchor);
-                    int width = original.Right - original.Left;
-                    if (width > 0)
-                    {
-                        int left = Math.Clamp((int)anchor.X - width - 10, area.Left, Math.Max(area.Left, area.Right - width));
-                        int top = Math.Clamp((int)anchor.Y, area.Top, Math.Max(area.Top, area.Bottom - (original.Bottom - original.Top)));
-                        SetWindowPos(overflow, 0, left, top, 0, 0, 0x15);
-                    }
-                    Thread.Sleep(90);
-                }
                 if (!exactPrimary)
                 {
                     positioned = TryIconBounds(item, out iconBounds);
@@ -87,13 +75,15 @@ internal static class NativeTrayMenu
             var (element, _, surface) = choices[0];
             if (context is not null)
             {
-                // An actual Explorer click invokes the icon callback, including for elevated apps.
-                if (!ClickElement(client, element, surface, right: true))
+                if (element is IUIAutomationElement3 automationMenu)
                 {
-                    if (element is not IUIAutomationElement3 menu) return false;
-                    menu.ShowContextMenu();
+                    try { automationMenu.ShowContextMenu(); }
+                    catch (COMException) { }
+                    if (context.WaitForMenu(client, attempts: 7)) return true;
                 }
-                // UI Automation can return success for a parent menu. Only accept the target app's menu.
+                // Explorer forwards a real click even when the app's callback runs elevated.
+                if (!ClickElement(client, element, surface, right: true)) return false;
+                context.Dispatched = true;
                 return context.WaitForMenu(client);
             }
             if (!ClickElement(client, element, surface, right: false, doubleClick) && (doubleClick || !InvokePrimary(element)))
@@ -105,12 +95,7 @@ internal static class NativeTrayMenu
         { return false; }
         finally
         {
-            if (openedOverflow && overflow != 0)
-            {
-                // Return the overflow to its original position without changing icon pinning.
-                uint flags = original.Right > original.Left ? 0x95u : 0x97u;
-                SetWindowPos(overflow, 0, original.Left, original.Top, 0, 0, flags);
-            }
+            if (openedOverflow && overflow != 0) ShowWindowAsync(overflow, 0);
             taskbar?.Dispose();
             foreach (var candidate in candidates) Marshal.ReleaseComObject(candidate.Element);
             if (automation is not null && Marshal.IsComObject(automation)) Marshal.ReleaseComObject(automation);
@@ -395,20 +380,22 @@ internal static class NativeTrayMenu
         private readonly nint window;
         private readonly bool wasHidden;
         private readonly uint state;
+        private readonly bool changedAutoHide;
 
-        internal TaskbarAccess(nint window)
+        internal TaskbarAccess(nint window, bool forceLayout)
         {
             this.window = window;
             wasHidden = !IsWindowVisible(window);
             state = Taskbar.GetState();
-            if ((state & 1) != 0) Taskbar.SetState(window, state & ~1u);
+            changedAutoHide = forceLayout && (state & 1) != 0;
+            if (changedAutoHide) Taskbar.SetState(window, state & ~1u);
             if (wasHidden) ShowWindowAsync(window, 4);
-            if (wasHidden || (state & 1) != 0) Thread.Sleep(170);
+            if (wasHidden || changedAutoHide) Thread.Sleep(changedAutoHide ? 170 : 65);
         }
 
         public void Dispose()
         {
-            if ((state & 1) != 0 && Taskbar.GetState() == (state & ~1u)) Taskbar.SetState(window, state);
+            if (changedAutoHide && Taskbar.GetState() == (state & ~1u)) Taskbar.SetState(window, state);
             if (wasHidden) ShowWindowAsync(window, 0);
         }
     }
@@ -445,6 +432,7 @@ internal static class NativeTrayMenu
         private readonly System.Text.StringBuilder className = new(96);
         internal Point Anchor { get; }
         internal nint Menu { get; private set; }
+        internal bool Dispatched { get; set; }
 
         internal MenuAnchor(TraySnapshot.Item item, Point anchor, Rect tray)
         {
@@ -461,9 +449,9 @@ internal static class NativeTrayMenu
             }, 0);
         }
 
-        internal bool WaitForMenu(IUIAutomation client)
+        internal bool WaitForMenu(IUIAutomation client, int attempts = 32)
         {
-            for (int attempt = 0; attempt < 32; attempt++)
+            for (int attempt = 0; attempt < attempts; attempt++)
             {
                 EnumWindows((window, _) => !TryObserve(client, window), 0);
                 if (Menu != 0) return true;
@@ -494,7 +482,8 @@ internal static class NativeTrayMenu
             if (GetClassName(window, className, className.Capacity) == 0) return false;
             if (className.ToString() == "#32768") return true;
             const uint popup = 0x80000000, caption = 0x00C00000;
-            if (((uint)GetWindowLong(window, -16) & (popup | caption)) != popup) return false;
+            uint style = (uint)GetWindowLong(window, -16);
+            if ((style & popup) == 0 || (style & caption) == caption) return false;
             menuProbes.TryGetValue(window, out var probe);
             long now = Environment.TickCount64;
             if (probe.Count >= 3 || now < probe.Next) return false;

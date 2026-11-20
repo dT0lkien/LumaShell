@@ -78,6 +78,7 @@ internal static class FinderPreview
             PumpUntil(() => Find<TextBox>(preview, box => box.IsReadOnly && box.Text == "Luma") is not null, "rendering Quick Look");
             preview.Close();
             VerifyPdfPreview(assembly, window, projects, list);
+            VerifyPhotoPreview(window, desktop, list);
             open.Invoke(window, [desktop]);
             PumpUntil(() => list.Items.Count == files.Length + 2, "returning to the Finder preview folder");
 
@@ -98,6 +99,34 @@ internal static class FinderPreview
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
         }
+    }
+
+    private static void VerifyPhotoPreview(Window finder, string folder, ListView list)
+    {
+        string path = Path.Combine(folder, "Обложка.png");
+        var pixels = Enumerable.Repeat(0xFF3D7AC1u, 120 * 80).ToArray();
+        var photo = BitmapSource.Create(120, 80, 96, 96, PixelFormats.Bgra32, null, pixels, 120 * 4);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(photo));
+        using (var stream = File.Create(path)) encoder.Save(stream);
+        finder.GetType().GetMethod("Reveal", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(finder, [path]);
+        PumpUntil(() => Find<Image>(list, image => image.Source is BitmapSource { PixelWidth: 96, PixelHeight: 64 }) is not null,
+            "loading the file row photo thumbnail");
+        finder.Activate();
+        var toolbar = Find<Button>(finder, button => AutomationProperties.GetName(button) == "Сортировать файлы")!;
+        toolbar.Focus();
+        PumpUntil(() => finder.IsActive && toolbar.IsKeyboardFocused, "giving the Finder toolbar keyboard focus");
+        keybd_event(0x20, 0, 0, 0);
+        keybd_event(0x20, 0, 2, 0);
+        var preview = Application.Current.Windows.OfType<Window>().FirstOrDefault(window => window.Owner == finder);
+        PumpUntil(() =>
+        {
+            preview ??= Application.Current.Windows.OfType<Window>().FirstOrDefault(window => window.Owner == finder);
+            return preview is not null && Find<Image>(preview, image =>
+                image.Source is BitmapSource && image.ActualWidth > 100 && image.ActualHeight > 100) is not null;
+        }, "opening an actual photo with Space and fitting the preview");
+        preview!.Close();
+        Console.WriteLine("Finder rendered a photo thumbnail and opened a fitted image preview with Space from the toolbar.");
     }
 
     private static void VerifyTaskManager(Assembly assembly, Window owner)
@@ -431,6 +460,8 @@ internal static class FinderPreview
     private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint x, uint y, uint data, nuint extra);
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte key, byte scan, uint flags, nuint extra);
 
     private static void PumpUntil(Func<bool> finished, string description)
     {

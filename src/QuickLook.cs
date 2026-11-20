@@ -92,7 +92,11 @@ internal sealed class QuickLook : Window
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         PreviewKeyDown += (_, args) =>
         {
-            if (args.Key is Key.Space or Key.Escape) { args.Handled = true; Close(); }
+            if (args.Key is Key.Space or Key.Escape)
+            {
+                args.Handled = true;
+                if (!args.IsRepeat) Close();
+            }
             else if (pdf is not null && args.Key is Key.Left or Key.Right or Key.PageUp or Key.PageDown)
             {
                 args.Handled = true;
@@ -142,18 +146,21 @@ internal sealed class QuickLook : Window
 
     private static UIElement CreateImagePreview(ImageSource source)
     {
-        var image = new Image { Source = source, Stretch = Stretch.Uniform, Margin = new Thickness(8) };
-        var scroller = new ScrollViewer { Content = image, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        scroller.SizeChanged += (_, _) =>
-        {
-            if (image.Tag is null) image.MaxWidth = Math.Max(1, scroller.ViewportWidth - 16);
-        };
+        var image = new Image { Source = source, Stretch = Stretch.Uniform };
+        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+        var scroller = new ScrollViewer { Content = image, Margin = new Thickness(8),
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        double zoom = 1;
         scroller.PreviewMouseWheel += (_, args) =>
         {
-            if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control) || image.ActualWidth <= 0) return;
-            image.Tag = true;
-            image.MaxWidth = Math.Clamp(image.ActualWidth * (args.Delta > 0 ? 1.2 : 1 / 1.2), 80, 3000);
+            if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control) || source.Width <= 0 || source.Height <= 0) return;
+            zoom = Math.Clamp(zoom * (args.Delta > 0 ? 1.2 : 1 / 1.2), 1, 6);
+            var bars = zoom > 1 ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+            scroller.HorizontalScrollBarVisibility = scroller.VerticalScrollBarVisibility = bars;
+            double fit = Math.Min(scroller.ActualWidth / source.Width, scroller.ActualHeight / source.Height);
+            image.Width = zoom > 1 ? source.Width * fit * zoom : double.NaN;
+            image.Height = zoom > 1 ? source.Height * fit * zoom : double.NaN;
             args.Handled = true;
         };
         return scroller;
@@ -326,16 +333,17 @@ internal sealed class QuickLook : Window
     }
 
     internal static bool IsImage(string extension) => extension.ToLowerInvariant() is
-        ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".tif" or ".tiff" or ".ico" or ".webp" or ".heic" or ".heif";
+        ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".tif" or ".tiff" or ".ico" or ".webp" or ".heic" or ".heif" or ".avif";
 
     internal static ImageSource? ReadImage(string path, int width)
     {
         try
         {
             using var file = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            return file.Length <= 40 * 1024 * 1024 ? DecodeImage(file, width) : null;
+            if (file.Length <= 40 * 1024 * 1024) return DecodeImage(file, width);
         }
-        catch (Exception error) when (PreviewError(error)) { return null; }
+        catch (Exception error) when (PreviewError(error)) { }
+        return FinderFiles.ReadThumbnail(path, Math.Clamp(width, 96, 1024));
     }
 
     private static ImageSource DecodeImage(Stream stream, int width)

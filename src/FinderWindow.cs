@@ -517,10 +517,9 @@ internal sealed class FinderWindow : Window
     {
         var dock = new FrameworkElementFactory(typeof(DockPanel));
         dock.SetValue(FrameworkElement.MarginProperty, new Thickness(8, 0, 0, 0));
-        var icon = new FrameworkElementFactory(typeof(Image));
-        icon.SetBinding(Image.SourceProperty, new Binding(nameof(FinderEntry.Icon)));
-        icon.SetValue(WidthProperty, 16d);
-        icon.SetValue(HeightProperty, 16d);
+        var icon = new FrameworkElementFactory(typeof(FinderThumbnail));
+        icon.SetValue(WidthProperty, 24d);
+        icon.SetValue(HeightProperty, 20d);
         icon.SetValue(MarginProperty, new Thickness(0, 0, 9, 0));
         dock.AppendChild(icon);
         var text = new FrameworkElementFactory(typeof(TextBlock));
@@ -969,7 +968,11 @@ internal sealed class FinderWindow : Window
             else GoHistory(args.SystemKey == Key.Left ? -1 : 1);
         }
         else if (args.Key == Key.F5) Reload();
-        else if (pickerTitle is null && args.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.None && list.IsKeyboardFocusWithin) ToggleQuickLook();
+        else if (pickerTitle is null && args.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.None &&
+            !search.IsKeyboardFocusWithin && !address.IsKeyboardFocusWithin && list.SelectedItem is FinderEntry)
+        {
+            if (!args.IsRepeat) ToggleQuickLook();
+        }
         else if (pickerTitle is null && list.IsKeyboardFocusWithin && (args.Key == Key.Apps || args.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift))
         {
             if (list.ItemContainerGenerator.ContainerFromItem(list.SelectedItem) is ListViewItem row && row.IsVisible)
