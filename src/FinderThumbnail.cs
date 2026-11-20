@@ -34,8 +34,8 @@ internal sealed class FinderThumbnail : Image
             await Decoders.WaitAsync(request.Token);
             try
             {
-                var image = await Task.Run(() => QuickLook.ReadImage(entry.Path, 96), request.Token);
-                if (!request.IsCancellationRequested && image is not null) Source = image;
+                var photo = await Task.Run(() => QuickLook.ReadPhoto(entry.Path, 96), request.Token);
+                if (!request.IsCancellationRequested && photo is not null) Source = photo.ToImage();
             }
             finally { Decoders.Release(); }
         }

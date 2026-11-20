@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -12,6 +13,8 @@ using System.Windows.Threading;
 using Windows.Data.Pdf;
 using Windows.Storage;
 using Windows.Storage.Streams;
+using Drawing = System.Drawing;
+using DrawingImaging = System.Drawing.Imaging;
 using static LumaShell.Visuals;
 
 namespace LumaShell;
@@ -118,6 +121,14 @@ internal sealed class QuickLook : Window
 
     private async Task LoadPreview(FinderEntry entry)
     {
+        if (IsImage(entry.Extension))
+        {
+            var photo = await Task.Run(() => ReadPhoto(entry.Path, 1800));
+            if (closed) return;
+            if (photo is not null) content.Content = CreateImagePreview(photo.ToImage());
+            else ShowMessage("Не удалось прочитать изображение");
+            return;
+        }
         if (entry.Extension.Equals(".pdf", StringComparison.OrdinalIgnoreCase))
         {
             await LoadPdf(entry.Path);
@@ -131,9 +142,7 @@ internal sealed class QuickLook : Window
         }
         object? data = await Task.Run(() => ReadPreview(entry));
         if (closed) return;
-        if (data is ImageSource image)
-            content.Content = CreateImagePreview(image);
-        else if (data is string text)
+        if (data is string text)
             content.Content = new TextBox
             {
                 Text = text, IsReadOnly = true, TextWrapping = TextWrapping.Wrap,
@@ -141,7 +150,6 @@ internal sealed class QuickLook : Window
                 FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 13,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(14)
             };
-        else if (IsImage(entry.Extension)) ShowMessage("Не удалось прочитать изображение");
     }
 
     private static UIElement CreateImagePreview(ImageSource source)
@@ -335,29 +343,63 @@ internal sealed class QuickLook : Window
     internal static bool IsImage(string extension) => extension.ToLowerInvariant() is
         ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".tif" or ".tiff" or ".ico" or ".webp" or ".heic" or ".heif" or ".avif";
 
-    internal static ImageSource? ReadImage(string path, int width)
+    internal static ImageSource? ReadImage(string path, int width) => ReadPhoto(path, width)?.ToImage();
+
+    internal sealed record PhotoPixels(int Width, int Height, byte[] Pixels)
     {
-        bool useShell = Path.GetExtension(path).ToLowerInvariant() is ".webp" or ".heic" or ".heif" or ".avif";
+        internal BitmapSource ToImage()
+        {
+            var image = BitmapSource.Create(Width, Height, 96, 96, PixelFormats.Pbgra32, null, Pixels, Width * 4);
+            image.Freeze();
+            return image;
+        }
+    }
+
+    internal static PhotoPixels? ReadPhoto(string path, int size)
+    {
+        bool useShell = Path.GetExtension(path).ToLowerInvariant() is ".webp" or ".heic" or ".heif" or ".avif" or ".ico";
         try
         {
             using var file = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (file.Length <= 40 * 1024 * 1024) return CopyImagePixels(DecodeImage(file, width));
+            if (file.Length <= 40 * 1024 * 1024)
+            {
+                if (useShell) return CopyImagePixels(DecodeImage(file, size));
+                using var source = new Drawing.Bitmap(file);
+                double scale = Math.Min(1, (double)size / Math.Max(source.Width, source.Height));
+                int width = Math.Max(1, (int)Math.Round(source.Width * scale));
+                int height = Math.Max(1, (int)Math.Round(source.Height * scale));
+                var bounds = new Drawing.Rectangle(0, 0, width, height);
+                using var thumbnail = new Drawing.Bitmap(width, height, DrawingImaging.PixelFormat.Format32bppPArgb);
+                using (var graphics = Drawing.Graphics.FromImage(thumbnail))
+                {
+                    graphics.CompositingMode = Drawing.Drawing2D.CompositingMode.SourceCopy;
+                    graphics.InterpolationMode = Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    graphics.DrawImage(source, bounds);
+                }
+                var buffer = thumbnail.LockBits(bounds, DrawingImaging.ImageLockMode.ReadOnly, thumbnail.PixelFormat);
+                try
+                {
+                    var pixels = new byte[width * height * 4];
+                    for (int y = 0; y < height; y++)
+                        Marshal.Copy(buffer.Scan0 + y * buffer.Stride, pixels, y * width * 4, width * 4);
+                    return new PhotoPixels(width, height, pixels);
+                }
+                finally { thumbnail.UnlockBits(buffer); }
+            }
             useShell = true;
         }
         catch (Exception error) when (PreviewError(error)) { }
-        return useShell ? FinderFiles.ReadThumbnail(path, Math.Clamp(width, 96, 1024)) : null;
+        return useShell && FinderFiles.ReadThumbnail(path, Math.Clamp(size, 96, 1024)) is BitmapSource fallback
+            ? CopyImagePixels(fallback) : null;
     }
 
-    private static BitmapSource CopyImagePixels(BitmapSource source)
+    private static PhotoPixels CopyImagePixels(BitmapSource source)
     {
         var bitmap = new FormatConvertedBitmap(source, PixelFormats.Pbgra32, null, 0);
         int stride = checked(bitmap.PixelWidth * 4);
         var pixels = new byte[checked(stride * bitmap.PixelHeight)];
         bitmap.CopyPixels(pixels, stride, 0);
-        var detached = BitmapSource.Create(bitmap.PixelWidth, bitmap.PixelHeight, 96, 96,
-            PixelFormats.Pbgra32, null, pixels, stride);
-        detached.Freeze();
-        return detached;
+        return new PhotoPixels(bitmap.PixelWidth, bitmap.PixelHeight, pixels);
     }
 
     private static BitmapSource DecodeImage(Stream stream, int width)
@@ -378,7 +420,6 @@ internal sealed class QuickLook : Window
     private static object? ReadPreview(FinderEntry entry)
     {
         string extension = entry.Extension.ToLowerInvariant();
-        if (IsImage(extension)) return ReadImage(entry.Path, 1800);
         bool text = extension is ".txt" or ".md" or ".csv" or ".log" or ".json" or ".xml" or ".ini" or ".yaml" or ".yml";
         if (!text) return null;
         try
