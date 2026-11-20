@@ -65,10 +65,14 @@ internal sealed class MenuTray
         menu.Children.Add(title);
         menu.Children.Add(details);
 
-        var switches = new UniformGrid { Columns = 2, Rows = 1, Margin = new Thickness(-3, 0, -3, 8) };
+        var switches = new UniformGrid { Columns = 2, Margin = new Thickness(-3, 0, -3, 5) };
         switches.Children.Add(ControlTile("Сеть", "M2,6 Q10,-1 18,6 M5,9 Q10,5 15,9 M8,12 Q10,10 12,12 M10,15 L10.1,15",
             () => Desktop.Launch("ms-settings:network")));
         switches.Children.Add(ControlTile("Уведомления", "M4,15 H16 M6,14 V8 A4,4 0 0 1 14,8 V14 M8,17 Q10,20 12,17", showNotifications));
+        switches.Children.Add(ControlTile("Bluetooth", "M6,5 L14,14 L10,18 V2 L14,6 L6,15",
+            () => Desktop.Launch("ms-settings:bluetooth")));
+        switches.Children.Add(ControlTile("Дисплей", "M2,3 H18 V13 H2 Z M10,13 V17 M6,17 H14",
+            () => Desktop.Launch("ms-settings:display")));
         menu.Children.Add(switches);
 
         var audio = new StackPanel();
@@ -87,6 +91,7 @@ internal sealed class MenuTray
         menu.Children.Add(card);
         volume.ValueChanged += (_, _) => { if (!settingVolume) { Audio.SetLevel(volume.Value); sound.Text = $"Звук · {volume.Value:P0}"; } };
 
+        menu.Children.Add(TrayButton("Микшер громкости", () => Desktop.Launch("ms-settings:apps-volume")));
         menu.Children.Add(TrayButton("Питание и батарея", () => Desktop.Launch("ms-settings:powersleep")));
         menu.Children.Add(TrayButton("Трей приложений Luma", appTray));
         var updateButton = Button(updates, "Обновления Luma", () => { popup.IsOpen = false; update(); }, Card);
@@ -113,7 +118,7 @@ internal sealed class MenuTray
         row.Children.Add(badge);
         row.Children.Add(Text(label, 12, bold: true));
         var button = Button(row, label, () => { popup.IsOpen = false; action(); }, Paint("#56202025"), 9);
-        button.Margin = new Thickness(3, 0, 3, 0);
+        button.Margin = new Thickness(3, 0, 3, 4);
         button.HorizontalContentAlignment = HorizontalAlignment.Left;
         return button;
     }

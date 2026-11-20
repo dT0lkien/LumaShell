@@ -86,6 +86,13 @@ internal sealed class Desktop
         left.Children.Add(Menu(Icon("M2,13 L8,2 L14,13 M5,10 L11,10", 16), "Luma", () =>
         [
             Entry("Приложения Luma", openLauncher), Entry("Открыть остров", () => openIsland(IslandTab.Home)),
+            new Separator(),
+            Entry("Сон", () => SessionPower.Run(MenuBar, SessionPower.Action.Sleep)),
+            Entry("Заблокировать экран", () => SessionPower.Run(MenuBar, SessionPower.Action.Lock)),
+            Entry("Перезагрузить…", () => SessionPower.Run(MenuBar, SessionPower.Action.Restart)),
+            Entry("Завершить работу…", () => SessionPower.Run(MenuBar, SessionPower.Action.ShutDown)),
+            Entry("Выйти из сеанса Windows…", () => SessionPower.Run(MenuBar, SessionPower.Action.SignOut)),
+            new Separator(),
             Entry("Временно показать панель Windows", nativeTray),
             Entry(settings.WinLauncher ? "Вернуть меню Windows на Win" : "Открывать приложения Luma по Win", toggleWin),
             Entry(settings.AutoStart ? "Выключить автозапуск Luma" : "Запускать Luma при входе", toggleStartup),
