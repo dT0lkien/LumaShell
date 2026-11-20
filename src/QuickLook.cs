@@ -341,14 +341,26 @@ internal sealed class QuickLook : Window
         try
         {
             using var file = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (file.Length <= 40 * 1024 * 1024) return DecodeImage(file, width);
+            if (file.Length <= 40 * 1024 * 1024) return CopyImagePixels(DecodeImage(file, width));
             useShell = true;
         }
         catch (Exception error) when (PreviewError(error)) { }
         return useShell ? FinderFiles.ReadThumbnail(path, Math.Clamp(width, 96, 1024)) : null;
     }
 
-    private static ImageSource DecodeImage(Stream stream, int width)
+    private static BitmapSource CopyImagePixels(BitmapSource source)
+    {
+        var bitmap = new FormatConvertedBitmap(source, PixelFormats.Pbgra32, null, 0);
+        int stride = checked(bitmap.PixelWidth * 4);
+        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        var detached = BitmapSource.Create(bitmap.PixelWidth, bitmap.PixelHeight, 96, 96,
+            PixelFormats.Pbgra32, null, pixels, stride);
+        detached.Freeze();
+        return detached;
+    }
+
+    private static BitmapSource DecodeImage(Stream stream, int width)
     {
         var bitmap = new BitmapImage();
         bitmap.BeginInit();

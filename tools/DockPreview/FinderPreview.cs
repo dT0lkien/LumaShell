@@ -109,11 +109,13 @@ internal static class FinderPreview
         }
         finally
         {
+            Console.WriteLine("Closing the test Finder window.");
             window.Close();
             var thumbnail = assembly.GetType("LumaShell.FinderThumbnail", throwOnError: true)!;
             var decoders = (SemaphoreSlim)thumbnail.GetField("Decoders", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
             PumpUntil(() => decoders.CurrentCount == 3, "finishing thumbnail reads before cleanup");
             Directory.Delete(sandbox, recursive: true);
+            Console.WriteLine("Finder test resources cleaned up. Shutting down WPF.");
             application.Shutdown();
         }
     }
