@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Windows;
@@ -10,6 +11,12 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Length > 1 && args[0] != "--verify-child")
+        {
+            RunAndReportWindowsErrors(args);
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--verify-child") args = args[1..];
         var assembly = Assembly.Load("LumaShell");
         var builtin = assembly.GetType("LumaShell.DockArt", throwOnError: true)!
             .GetMethod("Builtin", BindingFlags.Static | BindingFlags.NonPublic)!;
@@ -53,5 +60,27 @@ internal static class Program
                 Environment.ExitCode = 1;
             }
         }
+    }
+
+    private static void RunAndReportWindowsErrors(string[] args)
+    {
+        var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+        if (Path.GetFileNameWithoutExtension(start.FileName).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            start.ArgumentList.Add(typeof(Program).Assembly.Location);
+        start.ArgumentList.Add("--verify-child");
+        foreach (var arg in args) start.ArgumentList.Add(arg);
+        using var child = Process.Start(start)!;
+        child.WaitForExit();
+        Environment.ExitCode = child.ExitCode;
+        if (child.ExitCode == 0) return;
+        Console.Error.WriteLine($"The Windows preview process exited with {child.ExitCode} (0x{child.ExitCode:X8}).");
+
+        var query = new ProcessStartInfo("wevtutil.exe") { UseShellExecute = false, RedirectStandardOutput = true };
+        foreach (var arg in new[] { "qe", "Application", "/q:*[System[(EventID=1000 or EventID=1026) and TimeCreated[timediff(@SystemTime)<=180000]]]",
+                     "/rd:true", "/c:8", "/f:text" }) query.ArgumentList.Add(arg);
+        using var events = Process.Start(query)!;
+        foreach (string entry in events.StandardOutput.ReadToEnd().Split("\r\n\r\n"))
+            if (entry.Contains("DockPreview", StringComparison.OrdinalIgnoreCase)) Console.Error.WriteLine(entry);
+        events.WaitForExit();
     }
 }
