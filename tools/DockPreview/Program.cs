@@ -44,6 +44,14 @@ internal static class Program
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
         using (var file = File.Create(output)) encoder.Save(file);
         Console.WriteLine("Rendered all eight Dock icons: " + output);
-        if (args.Length > 1) FinderPreview.VerifyAndRender(assembly, args[1]);
+        if (args.Length > 1)
+        {
+            try { FinderPreview.VerifyAndRender(assembly, args[1]); }
+            catch (Exception error)
+            {
+                Console.Error.WriteLine(error);
+                Environment.ExitCode = 1;
+            }
+        }
     }
 }

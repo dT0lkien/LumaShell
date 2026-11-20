@@ -337,13 +337,15 @@ internal sealed class QuickLook : Window
 
     internal static ImageSource? ReadImage(string path, int width)
     {
+        bool useShell = Path.GetExtension(path).ToLowerInvariant() is ".webp" or ".heic" or ".heif" or ".avif";
         try
         {
             using var file = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             if (file.Length <= 40 * 1024 * 1024) return DecodeImage(file, width);
+            useShell = true;
         }
         catch (Exception error) when (PreviewError(error)) { }
-        return FinderFiles.ReadThumbnail(path, Math.Clamp(width, 96, 1024));
+        return useShell ? FinderFiles.ReadThumbnail(path, Math.Clamp(width, 96, 1024)) : null;
     }
 
     private static ImageSource DecodeImage(Stream stream, int width)
