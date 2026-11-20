@@ -37,7 +37,21 @@ internal static class FinderPreview
         for (int i = 0; i < files.Length; i++)
         {
             string path = Path.Combine(desktop, files[i]);
-            using (var file = File.Create(path)) file.SetLength((i + 1) * 208471);
+            using (var file = File.Create(path))
+            {
+                BitmapEncoder? fixture = Path.GetExtension(path) switch
+                {
+                    ".png" => new PngBitmapEncoder(),
+                    ".jpg" => new JpegBitmapEncoder(),
+                    _ => null
+                };
+                if (fixture is not null)
+                {
+                    fixture.Frames.Add(BitmapFrame.Create(TestPhoto()));
+                    fixture.Save(file);
+                }
+                file.SetLength((i + 1) * 208471);
+            }
             File.SetLastWriteTime(path, new DateTime(2026, 11, 11, 10, 20, 0).AddHours(-3 * i));
         }
 
@@ -96,6 +110,9 @@ internal static class FinderPreview
         finally
         {
             window.Close();
+            var thumbnail = assembly.GetType("LumaShell.FinderThumbnail", throwOnError: true)!;
+            var decoders = (SemaphoreSlim)thumbnail.GetField("Decoders", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+            PumpUntil(() => decoders.CurrentCount == 3, "finishing thumbnail reads before cleanup");
             Directory.Delete(sandbox, recursive: true);
             application.Shutdown();
         }
@@ -104,13 +121,12 @@ internal static class FinderPreview
     private static void VerifyPhotoPreview(Window finder, string folder, ListView list)
     {
         string path = Path.Combine(folder, "Обложка.png");
-        var pixels = Enumerable.Repeat(0xFF3D7AC1u, 120 * 80).ToArray();
-        var photo = BitmapSource.Create(120, 80, 96, 96, PixelFormats.Bgra32, null, pixels, 120 * 4);
         var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(photo));
+        encoder.Frames.Add(BitmapFrame.Create(TestPhoto()));
         using (var stream = File.Create(path)) encoder.Save(stream);
         finder.GetType().GetMethod("Reveal", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(finder, [path]);
-        PumpUntil(() => Find<Image>(list, image => image.Source is BitmapSource { PixelWidth: 96, PixelHeight: 64 }) is not null,
+        PumpUntil(() => Find<Image>(list, image => image.Source is BitmapSource { PixelWidth: 96, PixelHeight: 64 } &&
+            image.DataContext?.GetType().GetProperty("Path")?.GetValue(image.DataContext) as string == path) is not null,
             "loading the file row photo thumbnail");
         finder.Activate();
         var toolbar = Find<Button>(finder, button => AutomationProperties.GetName(button) == "Сортировать файлы")!;
@@ -127,6 +143,12 @@ internal static class FinderPreview
         }, "opening an actual photo with Space and fitting the preview");
         preview!.Close();
         Console.WriteLine("Finder rendered a photo thumbnail and opened a fitted image preview with Space from the toolbar.");
+    }
+
+    private static BitmapSource TestPhoto()
+    {
+        var pixels = Enumerable.Repeat(0xFF3D7AC1u, 120 * 80).ToArray();
+        return BitmapSource.Create(120, 80, 96, 96, PixelFormats.Bgra32, null, pixels, 120 * 4);
     }
 
     private static void VerifyTaskManager(Assembly assembly, Window owner)
