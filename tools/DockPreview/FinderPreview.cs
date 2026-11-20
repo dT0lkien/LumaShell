@@ -22,7 +22,19 @@ internal static class FinderPreview
     internal static void VerifyAndRender(Assembly assembly, string output)
     {
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-        SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
+        Exception? failure = null;
+        application.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try { RunVerification(application, assembly, output); }
+            catch (Exception error) { failure = error; }
+            finally { application.Shutdown(failure is null ? 0 : 1); }
+        }));
+        application.Run();
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    private static void RunVerification(Application application, Assembly assembly, string output)
+    {
         string sandbox = Directory.CreateTempSubdirectory("Luma-Finder-").FullName;
         string desktop = Directory.CreateDirectory(Path.Combine(sandbox, "Рабочий стол")).FullName;
         string projects = Directory.CreateDirectory(Path.Combine(desktop, "Проекты")).FullName;
@@ -109,14 +121,11 @@ internal static class FinderPreview
         }
         finally
         {
-            Console.WriteLine("Closing the test Finder window.");
             window.Close();
             var thumbnail = assembly.GetType("LumaShell.FinderThumbnail", throwOnError: true)!;
             var decoders = (SemaphoreSlim)thumbnail.GetField("Decoders", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
             PumpUntil(() => decoders.CurrentCount == 3, "finishing thumbnail reads before cleanup");
             Directory.Delete(sandbox, recursive: true);
-            Console.WriteLine("Finder test resources cleaned up. Shutting down WPF.");
-            application.Shutdown();
         }
     }
 
