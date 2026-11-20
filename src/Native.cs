@@ -255,6 +255,7 @@ internal static class Native
     }
 
     internal static bool RestoreWindow(nint window) => ShowWindowAsync(window, 4);
+    internal static void MinimizeWindow(nint window) => ShowWindowAsync(window, 7);
 
     internal static bool ShowApplicationWindow(nint window) => ShowWindowAsync(window, IsIconic(window) ? 9 : 5);
 
@@ -370,12 +371,6 @@ internal static class Native
         if (!GetLastInputInfo(ref input)) return false;
         uint elapsed = unchecked((uint)Environment.TickCount - input.Tick);
         return elapsed < 0x80000000 && elapsed >= duration.TotalMilliseconds;
-    }
-
-    internal static bool HasActiveMenu()
-    {
-        var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
-        return GetGUIThreadInfo(0, ref info) && (info.Flags & 0x1C) != 0;
     }
 
     [StructLayout(LayoutKind.Sequential)]

@@ -211,7 +211,8 @@ internal sealed class TrayIcons
         if (Prism.IsTrayClient(item.Path))
             return await Prism.OpenRunning(item.Path, invokeTray: _ => InvokeIcon(item)) == true;
         var window = await Task.Run(() => FindWindow(item));
-        return window is not null && await Native.FocusWindow(window.Handle);
+        if (window is not null && await Native.FocusWindow(window.Handle)) return true;
+        return await InvokeIcon(item);
     }
 
     private static Native.OpenWindow? FindWindow(TraySnapshot.Item item)
@@ -323,17 +324,7 @@ internal sealed class TrayIcons
 
     private async void ActivateIcon(TraySnapshot.Item item)
     {
-        if (busy || openingWindow) return;
-        if (Prism.IsTrayClient(item.Path) || TrayAppActions.IsNvidiaControlPanel(item))
-        {
-            await OpenWindow(item);
-            return;
-        }
-        if (await InvokeIcon(item, bringWindowForward: true))
-        {
-            popup.IsOpen = false;
-        }
-        else if (popup.IsOpen) await OpenWindow(item);
+        if (!busy && !openingWindow) await OpenWindow(item);
     }
 
     internal async Task<bool> InvokeByPath(string executable)
@@ -350,7 +341,7 @@ internal sealed class TrayIcons
         return false;
     }
 
-    private async Task<bool> InvokeIcon(TraySnapshot.Item item, bool doubleClick = false, bool bringWindowForward = false)
+    private async Task<bool> InvokeIcon(TraySnapshot.Item item, bool doubleClick = false)
     {
         if (busy || nativeMenu != 0) return false;
         busy = true;
@@ -359,12 +350,8 @@ internal sealed class TrayIcons
         {
             Point anchor = popup.IsOpen ? trayPanel.PointToScreen(new Point()) :
                 toggle.IsVisible ? toggle.PointToScreen(new Point(0, toggle.ActualHeight + 7)) : NativeTrayMenu.CursorPosition();
-            var existing = bringWindowForward ? await Task.Run(() => FindWindow(item)) : null;
             bool sent = await Task.Run(() => NativeTrayMenu.Invoke(item, anchor, doubleClick));
             if (!sent) SessionLog.Write($"Tray action unavailable for {Path.GetFileName(item.Path)}.");
-            if (sent && existing is not null && !NativeTrayMenu.HasForegroundMenu &&
-                Native.WindowMatches(existing) && !Native.IsApplicationWindowShown(existing.Handle))
-                return await Native.FocusWindow(existing.Handle);
             return sent;
         }
         finally { popup.StaysOpen = false; busy = false; }

@@ -65,6 +65,7 @@ internal sealed class Desktop
     internal bool Interacting => dock.IsMouseOver || DockWindow.IsActive || downloads.IsOpen || downloadPreview is not null;
     internal bool UsingNativeTray => trayIcons.UsingNativeTray;
     internal bool TrayIsOpen => trayIcons.IsOpen;
+    internal event Action<nint, List<Native.OpenWindow>>? WindowsObserved;
     internal Task<bool> InvokeTrayIcon(string executable) => trayIcons.InvokeByPath(executable);
 
     internal Desktop(Preferences settings, Action<IslandTab> openIsland, Action capture, Action screenshotFolder, Action exit,
@@ -137,15 +138,20 @@ internal sealed class Desktop
             new("Терминал", "cmd.exe", "", ["WindowsTerminal.exe", "cmd.exe", "OpenConsole.exe"], "#FF454653", "#FF101118", "M2,4 L18,4 L18,16 L2,16 Z M5,7 L8,10 L5,13 M10,13 L14,13"),
             new("Параметры", "ms-settings:", "", ["SystemSettings.exe"], "#FF9CA5B4", "#FF4D5361", "M10,3 L10,17 M3,10 L17,10 M5,5 L15,15 M15,5 L5,15 M14,10 A4,4 0 1 1 6,10 A4,4 0 1 1 14,10")
         ];
-        var glass = Surface(Gradient("#9D858991", "#AA393B43"), 23);
-        glass.BorderBrush = Paint("#6AFFFFFF");
+        var glass = Surface(Gradient("#AA606A7D", "#CD272E3C"), 24);
+        glass.BorderBrush = new LinearGradientBrush(
+        [
+            new GradientStop(Color.FromArgb(153, 255, 255, 255), 0),
+            new GradientStop(Color.FromArgb(48, 194, 211, 235), 0.65),
+            new GradientStop(Color.FromArgb(75, 205, 222, 246), 1)
+        ], 90);
         glass.BorderThickness = new Thickness(1);
         glass.RenderTransformOrigin = new Point(0.5, 0.5);
         glass.RenderTransform = glassWidth;
         glass.IsHitTestVisible = false;
         var frame = new Grid();
         frame.Children.Add(glass);
-        frame.Children.Add(new Border { Padding = new Thickness(9, 7, 9, 4), Child = dockRow });
+        frame.Children.Add(new Border { Padding = new Thickness(10, 8, 10, 5), Child = dockRow });
         dock = Surface(Brushes.Transparent, 23, frame);
         dock.HorizontalAlignment = HorizontalAlignment.Center;
         dock.VerticalAlignment = VerticalAlignment.Bottom;
@@ -322,6 +328,7 @@ internal sealed class Desktop
             appIdentities = snapshot.Identities;
             UpdateBrowser(snapshot.Browser);
             ApplyWindows(active, snapshot.Items, snapshot.ActivePath);
+            WindowsObserved?.Invoke(active, snapshot.Items);
         }
         finally { scanningWindows = false; }
     }
@@ -769,7 +776,7 @@ internal sealed class Desktop
             if (tile.Scale is null) continue;
             double center = tile.Anchor.TranslatePoint(new Point(tile.Anchor.ActualWidth / 2, 0), dockRow).X;
             double distance = hoverX is { } pointer ? (pointer - center) / SlotSize : double.PositiveInfinity;
-            tile.Growth = 0.42 * Math.Exp(-0.5 * distance * distance);
+            tile.Growth = 0.38 * Math.Exp(-0.44 * distance * distance);
             total += tile.Growth * IconSize;
         }
         double prefix = -total / 2;
@@ -788,7 +795,7 @@ internal sealed class Desktop
         double elapsed = lastFrame is { } previous ? (frame.RenderingTime - previous).TotalMilliseconds : 8;
         lastFrame = frame.RenderingTime;
         if (Mouse.LeftButton == MouseButtonState.Pressed) return;
-        double blend = 1 - Math.Exp(-Math.Clamp(elapsed, 0, 64) / 58);
+        double blend = 1 - Math.Exp(-Math.Clamp(elapsed, 0, 48) / (hoverX is null ? 70 : 49));
         if (targetsDirty) CalculateTargets();
         bool changing = false;
         foreach (var tile in slots)
@@ -853,16 +860,18 @@ internal sealed class Desktop
             if (!visible && DockWindow.IsVisible) DockWindow.Hide();
             return;
         }
-        var duration = TimeSpan.FromMilliseconds(visible ? 240 : 165);
+        var duration = TimeSpan.FromMilliseconds(visible ? 255 : 205);
+        var easing = new CubicEase { EasingMode = visible ? EasingMode.EaseOut : EasingMode.EaseIn };
         dockSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(y, dockSlide.Y, duration)
-            { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop });
-        var fade = new DoubleAnimation(opacity, dock.Opacity, duration) { FillBehavior = FillBehavior.Stop };
+            { EasingFunction = easing, FillBehavior = FillBehavior.Stop });
+        var fade = new DoubleAnimation(opacity, dock.Opacity, duration) { EasingFunction = easing, FillBehavior = FillBehavior.Stop };
         if (!visible) fade.Completed += (_, _) => { if (!dockVisible && DockWindow.IsVisible) DockWindow.Hide(); };
         dock.BeginAnimation(UIElement.OpacityProperty, fade);
     }
 
     internal static bool Launch(string target, string arguments = "")
     {
+        if (target.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase)) FolderRouting.AllowNativeExplorer();
         try { Process.Start(new ProcessStartInfo(target, arguments) { UseShellExecute = true })?.Dispose(); return true; }
         catch (Exception error) when (error is Win32Exception or InvalidOperationException or ArgumentException) { return false; }
     }

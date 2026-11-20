@@ -19,7 +19,6 @@ internal static class NativeTrayMenu
     internal static bool Invoke(TraySnapshot.Item item, Point anchor, bool doubleClick = false) =>
         TryActivate(item, null, anchor, doubleClick);
     internal static bool IsMenuOpen(nint menu) => menu != 0 && IsWindowVisible(menu);
-    internal static bool HasForegroundMenu => Native.HasActiveMenu();
     internal static Point CursorPosition() => GetCursorPos(out var cursor) ? new Point(cursor.X, cursor.Y) : new Point();
     internal static bool IsNativeSurface(nint window)
     {
@@ -274,20 +273,24 @@ internal static class NativeTrayMenu
         try
         {
             root = client.ElementFromHandle(window);
-            condition = client.CreatePropertyCondition(30003, 50000);
+            condition = client.CreateTrueCondition();
             elements = root.FindAll(TreeScope.TreeScope_Descendants, condition);
-            for (int index = 0; index < Math.Min(elements.Length, 400); index++)
+            for (int index = 0; index < Math.Min(elements.Length, 900); index++)
             {
                 var element = elements.GetElement(index);
                 bool kept = false;
                 try
                 {
-                    if (IsChevron(element) || !overflow && !InNotificationArea(client, element)) continue;
+                    if (element.CurrentControlType is not (50000 or 50007 or 50011 or 50025) &&
+                        element.CurrentClassName != "SystemTray.NotifyIconView") continue;
+                    if (IsChevron(element)) continue;
+                    bool named = SameLabel(element.CurrentName, title) || SameLabel(element.CurrentHelpText, title);
+                    if (!named && bounds is null) continue;
                     var rect = element.CurrentBoundingRectangle;
                     bool exact = bounds is { } icon && rect.right > rect.left && rect.bottom > rect.top &&
                         Math.Abs((long)rect.left + rect.right - icon.Left - icon.Right) <= 12 &&
                         Math.Abs((long)rect.top + rect.bottom - icon.Top - icon.Bottom) <= 12;
-                    if (!exact && !SameLabel(element.CurrentName, title) && !SameLabel(element.CurrentHelpText, title)) continue;
+                    if (!exact && !named || !overflow && !InNotificationArea(client, element)) continue;
                     if (candidates.Exists(candidate => client.CompareElements(candidate.Element, element) != 0)) continue;
                     candidates.Add((element, exact, window));
                     kept = true;
@@ -307,7 +310,7 @@ internal static class NativeTrayMenu
 
     private static bool InNotificationArea(IUIAutomation client, IUIAutomationElement element)
     {
-        var walker = client.ControlViewWalker;
+        var walker = client.RawViewWalker;
         IUIAutomationElement? parent = null;
         try
         {
@@ -390,22 +393,23 @@ internal static class NativeTrayMenu
     private sealed class TaskbarAccess : IDisposable
     {
         private readonly nint window;
-        private readonly bool restore;
+        private readonly bool wasHidden;
+        private readonly uint state;
 
         internal TaskbarAccess(nint window)
         {
             this.window = window;
-            if (IsWindowVisible(window)) return;
-            restore = ShowWindowAsync(window, 4);
-            if (restore)
-            {
-                for (int attempt = 0; attempt < 12 && !IsWindowVisible(window); attempt++) Thread.Sleep(15);
-            }
+            wasHidden = !IsWindowVisible(window);
+            state = Taskbar.GetState();
+            if ((state & 1) != 0) Taskbar.SetState(window, state & ~1u);
+            if (wasHidden) ShowWindowAsync(window, 4);
+            if (wasHidden || (state & 1) != 0) Thread.Sleep(170);
         }
 
         public void Dispose()
         {
-            if (restore) ShowWindowAsync(window, 0);
+            if ((state & 1) != 0 && Taskbar.GetState() == (state & ~1u)) Taskbar.SetState(window, state);
+            if (wasHidden) ShowWindowAsync(window, 0);
         }
     }
 

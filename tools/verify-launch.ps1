@@ -140,6 +140,17 @@ try {
     if (!$found) { throw 'The Windows folder request did not reach the running Luma Finder.' }
     Write-Host 'Windows opened a Unicode folder with spaces in the running Luma Finder.'
 
+    $direct = Join-Path $folderRoot 'Прямой запуск Explorer'
+    [IO.Directory]::CreateDirectory($direct) | Out-Null
+    Start-Process -FilePath "$env:SystemRoot\explorer.exe" -ArgumentList ('/n,"{0}"' -f $direct)
+    $found = $false
+    for ($i = 0; $i -lt 36 -and !$found; $i++) {
+        if ($process.WaitForExit(500)) { throw 'Luma exited while Explorer opened a folder directly.' }
+        $found = [LumaLaunchProbe]::WindowVisible($process.Id, 'Прямой запуск Explorer • Luma Finder')
+    }
+    if (!$found) { throw 'The standalone Explorer window was not handed off to Luma Finder.' }
+    Write-Host 'Luma Finder received the path from a directly launched Explorer window.'
+
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         $previousId = $process.Id
         Stop-Process -Id $previousId -Force

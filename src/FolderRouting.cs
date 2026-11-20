@@ -21,6 +21,73 @@ internal static class FolderRouting
     private static readonly string[] Types = ["Directory", "Drive"];
     private static readonly PipeOptions PrivatePipe = PipeOptions.CurrentUserOnly | PipeOptions.Asynchronous;
     private static readonly string PipeName = SessionPipeName();
+    private static long allowExplorerUntil;
+
+    internal static void AllowNativeExplorer() =>
+        Interlocked.Exchange(ref allowExplorerUntil, Environment.TickCount64 + 3000);
+
+    internal static bool NativeExplorerRequested => Environment.TickCount64 < Interlocked.Read(ref allowExplorerUntil);
+
+    internal static string? ExplorerFolderPath(string? location) =>
+        Uri.TryCreate(location, UriKind.Absolute, out var uri) && uri.IsFile ? Normalize(uri.LocalPath) : null;
+
+    internal sealed record ExplorerFolder(string Path, string? SelectedItem);
+
+    internal static ExplorerFolder? ReadExplorerFolder(nint handle)
+    {
+        object? shell = null, windows = null;
+        try
+        {
+            if (Type.GetTypeFromProgID("Shell.Application") is not { } type) return null;
+            shell = Activator.CreateInstance(type);
+            if (shell is null) return null;
+            windows = ((dynamic)shell).Windows();
+            if (windows is null) return null;
+            dynamic collection = windows;
+            ExplorerFolder? folder = null;
+            for (int index = 0; index < (int)collection.Count; index++)
+            {
+                object? entry = null, document = null, selection = null, item = null;
+                bool matched = false;
+                try
+                {
+                    entry = collection.Item(index);
+                    if (entry is null) continue;
+                    dynamic browser = entry;
+                    matched = new IntPtr(Convert.ToInt64(browser.HWND)) == handle;
+                    if (!matched) continue;
+                    // Leave Explorer in place when Shell reports multiple tabs for the same window.
+                    if (folder is not null) return null;
+                    string? path = ExplorerFolderPath((string?)browser.LocationURL);
+                    if (path is null) return null;
+                    document = browser.Document;
+                    selection = ((dynamic)document!).SelectedItems();
+                    int count = ((dynamic)selection!).Count;
+                    if (count > 1) return null;
+                    string? selected = null;
+                    if (count == 1)
+                    {
+                        item = ((dynamic)selection!).Item(0);
+                        selected = Normalize((string)((dynamic)item!).Path);
+                        if (selected is null || !string.Equals(Path.GetDirectoryName(selected),
+                            Path.TrimEndingDirectorySeparator(path), StringComparison.OrdinalIgnoreCase)) return null;
+                    }
+                    folder = new ExplorerFolder(path, selected);
+                }
+                catch (COMException) { if (matched) return null; }
+                finally { Release(item); Release(selection); Release(document); Release(entry); }
+            }
+            return folder;
+        }
+        catch (Exception error) when (error is COMException or InvalidCastException or ArgumentException or OverflowException or
+            Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { return null; }
+        finally { Release(windows); Release(shell); }
+    }
+
+    private static void Release(object? value)
+    {
+        if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+    }
 
     internal static string? ReadArgument(string[] args) =>
         args.Length == 2 && args[0] == Argument ? Normalize(args[1]) : null;

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -41,6 +43,8 @@ internal sealed class App : Application
     private readonly SemaphoreSlim startupGate = new(1);
     private readonly CancellationTokenSource folderRequests = new();
     private string? initialFolder;
+    private readonly Dictionary<nint, uint> observedExplorer = new();
+    private bool explorerBaselineReady;
 
     [STAThread]
     private static int Main(string[] args)
@@ -93,6 +97,7 @@ internal sealed class App : Application
         desktop = new Desktop(preferences, tab => OpenIsland(tab), screenshots.Begin, screenshots.OpenFolder, CloseFromMenu,
             taskbar.Reveal, () => SetWindowsTaskbarHidden(!preferences.HideWindowsTaskbar), UpdateFromMenu, updates, ToggleLauncher,
             ToggleWin, ToggleStartup, OpenFinder, ApplyWallpaper, ToggleFolderRouting, ToggleAutoInstall, OpenSessionLog);
+        desktop.WindowsObserved += ObserveExplorerWindows;
         prism.InvokeTray = desktop.InvokeTrayIcon;
         topBar = new TopBar(desktop.MenuBar);
         islandHandle = new WindowInteropHelper(island.Window).EnsureHandle();
@@ -200,6 +205,43 @@ internal sealed class App : Application
     private void OpenDefaultFinder()
     {
         if (shortcuts.FinderAvailable) OpenFinder(null);
+    }
+
+    private async void RouteNewExplorerWindow(nint window, uint process)
+    {
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            if (!CanRouteExplorer(window, process)) return;
+            var folder = await Task.Run(() => FolderRouting.ReadExplorerFolder(window));
+            if (!CanRouteExplorer(window, process)) return;
+            if (folder is not null)
+            {
+                if (folder.SelectedItem is { } item) RevealFinderItem(item);
+                else OpenFinder(folder.Path);
+                if (finder is { } target && await Native.FocusWindow(target.Handle) &&
+                    Native.WindowProcessId(window) == process && Native.IsFileExplorerWindow(window))
+                    Native.MinimizeWindow(window);
+                return;
+            }
+            await Task.Delay(160);
+        }
+    }
+
+    private bool CanRouteExplorer(nint window, uint process) =>
+        !folderRequests.IsCancellationRequested && preferences.RouteFolders && !FolderRouting.NativeExplorerRequested &&
+        Native.GetForegroundWindow() == window && Native.WindowProcessId(window) == process && Native.IsFileExplorerWindow(window);
+
+    private void ObserveExplorerWindows(nint active, List<Native.OpenWindow> windows)
+    {
+        foreach (var entry in observedExplorer.ToArray())
+            if (Native.WindowProcessId(entry.Key) != entry.Value) observedExplorer.Remove(entry.Key);
+        foreach (var window in windows)
+        {
+            if (!Native.IsFileExplorerWindow(window.Handle) || !observedExplorer.TryAdd(window.Handle, window.Process)) continue;
+            if (explorerBaselineReady && window.Handle == active && CanRouteExplorer(active, window.Process))
+                RouteNewExplorerWindow(active, window.Process);
+        }
+        explorerBaselineReady = true;
     }
 
     private void OpenFinder(string? path)

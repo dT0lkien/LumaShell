@@ -162,13 +162,13 @@ internal sealed class Taskbar : IDisposable
         finally { guard.ReleaseMutex(); }
     }
 
-    private static uint GetState()
+    internal static uint GetState()
     {
         var data = new AppBarData { Size = (uint)Marshal.SizeOf<AppBarData>() };
         return (uint)SHAppBarMessage(4, ref data);
     }
 
-    private static void SetState(nint window, uint state)
+    internal static void SetState(nint window, uint state)
     {
         var data = new AppBarData { Size = (uint)Marshal.SizeOf<AppBarData>(), Window = window, State = (nint)state };
         SHAppBarMessage(10, ref data);
