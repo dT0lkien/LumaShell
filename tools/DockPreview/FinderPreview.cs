@@ -293,9 +293,9 @@ internal static class FinderPreview
         if (actual != new Point(-498, 920)) throw new InvalidOperationException("The native menu did not fit to the left on a secondary display.");
         var outside = native.GetMethod("MenuPositionOutsideTray", BindingFlags.Static | BindingFlags.NonPublic)!;
         var narrow = new System.Drawing.Rectangle(0, 0, 565, 900);
-        var tray = new Rect(241, 20, 268, 389);
-        var below = (Point)outside.Invoke(null, [new Point(241, 371), tray, narrow, 303, 337])!;
-        if (new Rect(below, new Size(303, 337)).IntersectsWith(tray))
+        var trayBounds = new Rect(241, 20, 268, 389);
+        var below = (Point)outside.Invoke(null, [new Point(241, 371), trayBounds, narrow, 303, 337])!;
+        if (new Rect(below, new Size(303, 337)).IntersectsWith(trayBounds))
             throw new InvalidOperationException("The native menu overlapped a tray too close to the left edge.");
     }
 
