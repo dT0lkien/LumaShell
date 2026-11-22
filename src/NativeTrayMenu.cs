@@ -74,7 +74,7 @@ internal static class NativeTrayMenu
             {
                 if (element is IUIAutomationElement3 automationMenu)
                 {
-                    try { automationMenu.ShowContextMenu(); context.Dispatched = true; }
+                    try { context.RequestMenu(automationMenu); }
                     catch (COMException) { }
                     if (context.Dispatched) return context.WaitForMenu(client);
                 }
@@ -448,6 +448,27 @@ internal static class NativeTrayMenu
             }, 0);
         }
 
+        internal void RequestMenu(IUIAutomationElement3 element)
+        {
+            // Elevated Chromium apps position their tray menu at the pointer and may
+            // reject SetWindowPos from Luma. Supply the anchor before asking Explorer.
+            var area = WorkingArea(Anchor);
+            int reserve = (int)Math.Round(320 * Math.Max(1, tray.Width / 270));
+            var point = MenuPositionOutsideTray(Anchor, tray, area, reserve, 1);
+            bool moved = GetCursorPos(out var previous) && SetCursorPos((int)point.X, (int)point.Y);
+            try
+            {
+                element.ShowContextMenu();
+                Dispatched = true;
+                if (moved) Thread.Sleep(100);
+            }
+            finally
+            {
+                if (moved && GetCursorPos(out var current) && current.X == (int)point.X && current.Y == (int)point.Y)
+                    SetCursorPos(previous.X, previous.Y);
+            }
+        }
+
         internal bool WaitForMenu(IUIAutomation client, int attempts = 32)
         {
             for (int attempt = 0; attempt < attempts; attempt++)
@@ -470,7 +491,8 @@ internal static class NativeTrayMenu
             int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
             if (width <= 0 || height <= 0 || !IsMenu(client, window)) return false;
             Point position = MenuPositionOutsideTray(Anchor, tray, WorkingArea(Anchor), width, height);
-            if (!SetWindowPos(window, 0, (int)position.X, (int)position.Y, 0, 0, 0x15))
+            if (!SetWindowPos(window, 0, (int)position.X, (int)position.Y, 0, 0, 0x15) &&
+                tray.IntersectsWith(new Rect(bounds.Left, bounds.Top, width, height)))
                 return false;
             Menu = window;
             return true;
