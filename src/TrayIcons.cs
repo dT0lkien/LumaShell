@@ -302,7 +302,7 @@ internal sealed class TrayIcons
         popup.StaysOpen = true;
         try
         {
-            nint menu = await Task.Run(() => NativeTrayMenu.ShowContextMenu(item, anchor, trayBounds));
+            var (menu, dispatched) = await Task.Run(() => NativeTrayMenu.ShowContextMenu(item, anchor, trayBounds));
             if (!popup.IsOpen) return;
             if (NativeTrayMenu.IsMenuOpen(menu))
             {
@@ -310,6 +310,10 @@ internal sealed class TrayIcons
                 HideActions();
                 SetStatus("");
                 menuTimer.Start();
+            }
+            else if (dispatched)
+            {
+                popup.IsOpen = false;
             }
             else
             {

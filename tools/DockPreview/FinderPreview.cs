@@ -349,6 +349,10 @@ internal static class FinderPreview
             window.Close();
         }
         var native = assembly.GetType("LumaShell.NativeTrayMenu", throwOnError: true)!;
+        var label = native.GetMethod("SameLabel", BindingFlags.Static | BindingFlags.NonPublic)!;
+        if (!(bool)label.Invoke(null, ["Prism - Подключено", "Prism"])! ||
+            (bool)label.Invoke(null, ["Prism Helper", "Prism"])!)
+            throw new InvalidOperationException("Tray status text did not resolve to the correct application.");
         var position = native.GetMethod("MenuPosition", BindingFlags.Static | BindingFlags.NonPublic)!;
         var area = new System.Drawing.Rectangle(-1920, 40, 1920, 1040);
         var actual = (Point)position.Invoke(null, [new Point(-280, 1040), area, 210, 160])!;

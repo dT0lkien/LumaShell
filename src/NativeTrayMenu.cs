@@ -9,13 +9,11 @@ namespace LumaShell;
 
 internal static class NativeTrayMenu
 {
-    internal static nint ShowContextMenu(TraySnapshot.Item item, Point anchor, Rect tray)
+    internal static (nint Menu, bool Dispatched) ShowContextMenu(TraySnapshot.Item item, Point anchor, Rect tray)
     {
         var placement = new MenuAnchor(item, anchor, tray);
         TryActivate(item, placement, doubleClick: false);
-        if (placement.Menu == 0 && !placement.Dispatched)
-            TryActivate(item, placement, doubleClick: false, forceTaskbarLayout: true);
-        return placement.Menu;
+        return (placement.Menu, placement.Dispatched);
     }
 
     internal static bool Invoke(TraySnapshot.Item item, bool doubleClick = false) =>
@@ -29,8 +27,7 @@ internal static class NativeTrayMenu
                 "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow";
     }
 
-    private static bool TryActivate(TraySnapshot.Item item, MenuAnchor? context, bool doubleClick,
-        bool forceTaskbarLayout = false)
+    private static bool TryActivate(TraySnapshot.Item item, MenuAnchor? context, bool doubleClick)
     {
         object? automation = null;
         var candidates = new List<(IUIAutomationElement Element, bool Exact, nint Surface)>();
@@ -48,7 +45,7 @@ internal static class NativeTrayMenu
             }
             nint primary = FindWindow("Shell_TrayWnd", null);
             if (primary == 0) return false;
-            taskbar = new TaskbarAccess(primary, forceTaskbarLayout || context is null);
+            taskbar = new TaskbarAccess(primary);
             overflow = OverflowWindow();
             bool positioned = TryIconBounds(item, out var iconBounds);
             FindMatches(client, primary, false, item.Title, positioned ? iconBounds : null, candidates);
@@ -77,16 +74,17 @@ internal static class NativeTrayMenu
             {
                 if (element is IUIAutomationElement3 automationMenu)
                 {
-                    try { automationMenu.ShowContextMenu(); }
+                    try { automationMenu.ShowContextMenu(); context.Dispatched = true; }
                     catch (COMException) { }
-                    if (context.WaitForMenu(client, attempts: 7)) return true;
+                    if (context.Dispatched) return context.WaitForMenu(client);
                 }
                 // Explorer forwards a real click even when the app's callback runs elevated.
                 if (!ClickElement(client, element, surface, right: true)) return false;
                 context.Dispatched = true;
                 return context.WaitForMenu(client);
             }
-            if (!ClickElement(client, element, surface, right: false, doubleClick) && (doubleClick || !InvokePrimary(element)))
+            if (!doubleClick && InvokePrimary(element)) return true;
+            if (!ClickElement(client, element, surface, right: false, doubleClick))
                 return false;
             if (openedOverflow) Thread.Sleep(180);
             return true;
@@ -180,6 +178,7 @@ internal static class NativeTrayMenu
             legacy.DoDefaultAction();
             return true;
         }
+        catch (COMException) { return false; }
         finally { if (pattern is not null && Marshal.IsComObject(pattern)) Marshal.ReleaseComObject(pattern); }
     }
 
@@ -320,8 +319,14 @@ internal static class NativeTrayMenu
         }
     }
 
-    private static bool SameLabel(string? candidate, string title) => !string.IsNullOrWhiteSpace(candidate) &&
-        Visuals.Label(candidate, 85).Equals(title, StringComparison.CurrentCultureIgnoreCase);
+    private static bool SameLabel(string? candidate, string title)
+    {
+        if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(title)) return false;
+        string label = Visuals.Label(candidate, 85);
+        return label.Equals(title, StringComparison.OrdinalIgnoreCase) ||
+            label.StartsWith(title + " - ", StringComparison.OrdinalIgnoreCase) ||
+            label.StartsWith(title + " — ", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool TryIconBounds(TraySnapshot.Item item, out RectPixels bounds)
     {
@@ -379,23 +384,17 @@ internal static class NativeTrayMenu
     {
         private readonly nint window;
         private readonly bool wasHidden;
-        private readonly uint state;
-        private readonly bool changedAutoHide;
 
-        internal TaskbarAccess(nint window, bool forceLayout)
+        internal TaskbarAccess(nint window)
         {
             this.window = window;
             wasHidden = !IsWindowVisible(window);
-            state = Taskbar.GetState();
-            changedAutoHide = forceLayout && (state & 1) != 0;
-            if (changedAutoHide) Taskbar.SetState(window, state & ~1u);
             if (wasHidden) ShowWindowAsync(window, 4);
-            if (wasHidden || changedAutoHide) Thread.Sleep(changedAutoHide ? 170 : 65);
+            if (wasHidden) Thread.Sleep(65);
         }
 
         public void Dispose()
         {
-            if (changedAutoHide && Taskbar.GetState() == (state & ~1u)) Taskbar.SetState(window, state);
             if (wasHidden) ShowWindowAsync(window, 0);
         }
     }

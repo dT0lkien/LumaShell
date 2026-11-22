@@ -386,10 +386,9 @@ internal sealed class QuickLook : Window
                 }
                 finally { thumbnail.UnlockBits(buffer); }
             }
-            useShell = true;
         }
         catch (Exception error) when (PreviewError(error)) { }
-        return useShell && FinderFiles.ReadThumbnail(path, Math.Clamp(size, 96, 1024)) is BitmapSource fallback
+        return FinderFiles.ReadThumbnail(path, Math.Clamp(size, 96, 1024)) is BitmapSource fallback
             ? CopyImagePixels(fallback) : null;
     }
 
