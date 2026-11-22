@@ -470,7 +470,8 @@ internal static class NativeTrayMenu
             int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
             if (width <= 0 || height <= 0 || !IsMenu(client, window)) return false;
             Point position = MenuPositionOutsideTray(Anchor, tray, WorkingArea(Anchor), width, height);
-            SetWindowPos(window, 0, (int)position.X, (int)position.Y, 0, 0, 0x15);
+            if (!SetWindowPos(window, 0, (int)position.X, (int)position.Y, 0, 0, 0x15))
+                return false;
             Menu = window;
             return true;
         }
@@ -483,6 +484,12 @@ internal static class NativeTrayMenu
             const uint popup = 0x80000000, caption = 0x00C00000;
             uint style = (uint)GetWindowLong(window, -16);
             if ((style & popup) == 0 || (style & caption) == caption) return false;
+            // Chromium tray menus can expose only a Pane when their process is elevated.
+            // Match the newly visible untitled topmost tool popup of this icon's owner.
+            const int topmostTool = 0x00000088;
+            if (className.ToString() == "Chrome_WidgetWin_1" &&
+                (GetWindowLong(window, -20) & topmostTool) == topmostTool && GetWindowTextLength(window) == 0)
+                return true;
             menuProbes.TryGetValue(window, out var probe);
             long now = Environment.TickCount64;
             if (probe.Count >= 3 || now < probe.Next) return false;
@@ -508,6 +515,9 @@ internal static class NativeTrayMenu
             }
         }
     }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowTextLengthW")]
+    private static extern int GetWindowTextLength(nint window);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
     private static extern int GetWindowLong(nint window, int index);
