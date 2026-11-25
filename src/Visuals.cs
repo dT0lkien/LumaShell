@@ -130,8 +130,11 @@ internal static class Visuals
         chrome.AppendChild(presenter);
         var template = new ControlTemplate(typeof(Button)) { VisualTree = chrome };
         var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
-        hover.Setters.Add(new Setter(Border.BackgroundProperty, Paint("#38FFFFFF"), "Chrome"));
+        hover.Setters.Add(new Setter(Border.BackgroundProperty, Paint("#26FFFFFF"), "Chrome"));
         template.Triggers.Add(hover);
+        var pressed = new Trigger { Property = ButtonBase.IsPressedProperty, Value = true };
+        pressed.Setters.Add(new Setter(Border.BackgroundProperty, Paint("#3AFFFFFF"), "Chrome"));
+        template.Triggers.Add(pressed);
         var disabled = new Trigger { Property = UIElement.IsEnabledProperty, Value = false };
         disabled.Setters.Add(new Setter(UIElement.OpacityProperty, 0.38));
         template.Triggers.Add(disabled);

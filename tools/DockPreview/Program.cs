@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using LumaShell;
 
 internal static class Program
 {
@@ -18,39 +22,8 @@ internal static class Program
         }
         if (args.Length > 0 && args[0] == "--verify-child") args = args[1..];
         var assembly = Assembly.Load("LumaShell");
-        var builtin = assembly.GetType("LumaShell.DockArt", throwOnError: true)!
-            .GetMethod("Builtin", BindingFlags.Static | BindingFlags.NonPublic)!;
-        (string Target, string Arguments)[] items =
-        [
-            ("explorer.exe", ""), ("explorer.exe", "shell:AppsFolder"), ("https://www.bing.com/", ""),
-            ("notepad.exe", ""), ("cmd.exe", ""), ("ms-settings:", ""),
-            ("explorer.exe", "shell:Downloads"), ("explorer.exe", "shell:RecycleBinFolder")
-        ];
-        // Exercise the actual frozen WPF drawings and rasterizer, not a second copy of the artwork.
-        var visual = new DrawingVisual();
-        using (var context = visual.RenderOpen())
-        {
-            context.DrawRectangle(new LinearGradientBrush(Color.FromRgb(24, 80, 64), Color.FromRgb(16, 35, 53), 90), null, new Rect(0, 0, 584, 124));
-            context.DrawRoundedRectangle(new LinearGradientBrush(Color.FromArgb(157, 133, 137, 145), Color.FromArgb(170, 57, 59, 67), 45),
-                new Pen(new SolidColorBrush(Color.FromArgb(106, 255, 255, 255)), 1), new Rect(14, 23, 556, 84), 23, 23);
-            for (int index = 0; index < items.Length; index++)
-            {
-                var image = builtin.Invoke(null, [items[index].Target, items[index].Arguments]) as ImageSource
-                    ?? throw new InvalidOperationException("Missing artwork for " + items[index]);
-                if (!image.IsFrozen || image.Width != 64 || image.Height != 64) throw new InvalidOperationException("Invalid icon canvas");
-                context.DrawImage(image, new Rect(25 + index * 66, 31, 56, 56));
-                if (index < 6) context.DrawEllipse(Brushes.White, null, new Point(53 + index * 66, 96), 2.5, 2.5);
-            }
-            context.DrawLine(new Pen(new SolidColorBrush(Color.FromArgb(96, 255, 255, 255)), 1), new Point(415, 47), new Point(415, 82));
-        }
-        var bitmap = new RenderTargetBitmap(1168, 248, 192, 192, PixelFormats.Pbgra32);
-        bitmap.Render(visual);
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(bitmap));
         string output = args.Length == 0 ? "Dock-Preview.png" : args[0];
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
-        using (var file = File.Create(output)) encoder.Save(file);
-        Console.WriteLine("Rendered all eight Dock icons: " + output);
+        RenderDock(output);
         if (args.Length > 1)
         {
             try { FinderPreview.VerifyAndRender(assembly, args[1]); }
@@ -61,6 +34,85 @@ internal static class Program
             }
         }
     }
+
+    private static void RenderDock(string output)
+    {
+        using var updates = new Updates();
+        var desktop = new Desktop(new Preferences(), _ => { }, NoAction, NoAction, NoAction, NoAction, NoAction,
+            NoAction, updates, NoAction, NoAction, NoAction, _ => { }, NoAction, NoAction, NoAction, NoAction);
+        try
+        {
+            desktop.SetFinderHandle(1);
+            var layout = (Grid)desktop.DockWindow.Content;
+            desktop.DockWindow.Content = null;
+            const int width = 640, height = 120;
+            layout.Measure(new Size(width, height));
+            layout.Arrange(new Rect(0, 0, width, height));
+            layout.UpdateLayout();
+            var icons = Descendants<Image>(layout).ToArray();
+            if (icons.Length != 8 || icons.Any(icon => icon.Source is not { IsFrozen: true, Width: 64, Height: 64 }))
+                throw new InvalidOperationException("Invalid rendered Dock icons.");
+
+            var idle = Snapshot(layout, width, height);
+            const BindingFlags instance = BindingFlags.Instance | BindingFlags.NonPublic;
+            var row = (StackPanel)typeof(Desktop).GetField("dockRow", instance)!.GetValue(desktop)!;
+            var centerIcon = icons[3];
+            var center = centerIcon.TranslatePoint(new Point(centerIcon.ActualWidth / 2, 0), row).X;
+            typeof(Desktop).GetMethod("CalculateTargets", instance)!.Invoke(desktop, [center]);
+            typeof(Desktop).GetMethod("UpdateIconTransforms", instance)!.Invoke(desktop, [1d]);
+            var bounds = new Rect(new Point(), centerIcon.RenderSize);
+            if (centerIcon.TransformToAncestor(layout).TransformBounds(bounds).Width <= centerIcon.ActualWidth * 1.3)
+                throw new InvalidOperationException("Dock magnification did not reach the hovered icon.");
+            double previous = 0;
+            foreach (var icon in icons)
+            {
+                var rect = icon.TransformToAncestor(layout).TransformBounds(new Rect(new Point(), icon.RenderSize));
+                if (rect.Left < previous || rect.Top < 0 || rect.Right > width)
+                    throw new InvalidOperationException("Dock icons overlapped or exceeded the available space.");
+                previous = rect.Right;
+            }
+
+            var hovered = Snapshot(layout, width, height);
+            var composite = new DrawingVisual();
+            using (var dc = composite.RenderOpen())
+            {
+                dc.DrawRectangle(new LinearGradientBrush(Color.FromRgb(36, 72, 78), Color.FromRgb(30, 38, 55), 18),
+                    null, new Rect(0, 0, width, height * 2 + 12));
+                dc.DrawImage(idle, new Rect(0, 0, width, height));
+                dc.DrawImage(hovered, new Rect(0, height, width, height));
+            }
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(Snapshot(composite, width, height * 2 + 12)));
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
+            using var file = File.Create(output);
+            encoder.Save(file);
+            Console.WriteLine("Rendered the Dock at rest and with the hovered icon magnified: " + output);
+        }
+        finally
+        {
+            desktop.DockWindow.Close();
+            desktop.MenuBar.Close();
+        }
+    }
+
+    private static RenderTargetBitmap Snapshot(Visual visual, int width, int height)
+    {
+        var bitmap = new RenderTargetBitmap(width * 2, height * 2, 192, 192, PixelFormats.Pbgra32);
+        bitmap.Render(visual);
+        return bitmap;
+    }
+
+    private static IEnumerable<T> Descendants<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T value) yield return value;
+            foreach (var nested in Descendants<T>(child)) yield return nested;
+        }
+    }
+
+    private static void NoAction() { }
 
     private static void RunAndReportWindowsErrors(string[] args)
     {

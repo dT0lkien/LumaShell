@@ -26,6 +26,8 @@ internal sealed class Desktop
     private readonly TextBlock feedback = Text("", 12, Blue);
     private readonly StackPanel dockRow = new() { Orientation = Orientation.Horizontal };
     private readonly Border dock;
+    private readonly ControlTemplate dockButtonTemplate = CreateDockButtonTemplate();
+    private readonly ControlTemplate dockLabelTemplate = CreateDockLabelTemplate();
     private readonly List<(Pin Pin, Border Dot)> indicators = [];
     private readonly HashSet<string> activatingPins = new(StringComparer.OrdinalIgnoreCase);
     private readonly Preferences settings;
@@ -138,12 +140,12 @@ internal sealed class Desktop
             new("Терминал", "cmd.exe", "", ["WindowsTerminal.exe", "cmd.exe", "OpenConsole.exe"], "#FF454653", "#FF101118", "M2,4 L18,4 L18,16 L2,16 Z M5,7 L8,10 L5,13 M10,13 L14,13"),
             new("Параметры", "ms-settings:", "", ["SystemSettings.exe"], "#FF9CA5B4", "#FF4D5361", "M10,3 L10,17 M3,10 L17,10 M5,5 L15,15 M15,5 L5,15 M14,10 A4,4 0 1 1 6,10 A4,4 0 1 1 14,10")
         ];
-        var glass = Surface(Gradient("#AA606A7D", "#CD272E3C"), 24);
+        var glass = Surface(Gradient("#9852565B", "#B72C3035"), 21);
         glass.BorderBrush = new LinearGradientBrush(
         [
-            new GradientStop(Color.FromArgb(153, 255, 255, 255), 0),
-            new GradientStop(Color.FromArgb(48, 194, 211, 235), 0.65),
-            new GradientStop(Color.FromArgb(75, 205, 222, 246), 1)
+            new GradientStop(Color.FromArgb(115, 255, 255, 255), 0),
+            new GradientStop(Color.FromArgb(48, 255, 255, 255), 0.55),
+            new GradientStop(Color.FromArgb(44, 255, 255, 255), 1)
         ], 90);
         glass.BorderThickness = new Thickness(1);
         glass.RenderTransformOrigin = new Point(0.5, 0.5);
@@ -151,7 +153,7 @@ internal sealed class Desktop
         glass.IsHitTestVisible = false;
         var frame = new Grid();
         frame.Children.Add(glass);
-        frame.Children.Add(new Border { Padding = new Thickness(10, 8, 10, 5), Child = dockRow });
+        frame.Children.Add(new Border { Padding = new Thickness(8, 6, 8, 4), Child = dockRow });
         dock = Surface(Brushes.Transparent, 23, frame);
         dock.HorizontalAlignment = HorizontalAlignment.Center;
         dock.VerticalAlignment = VerticalAlignment.Bottom;
@@ -159,7 +161,7 @@ internal sealed class Desktop
         dock.RenderTransform = dockSlide;
         dock.MouseMove += (_, args) => MovePointer(args.GetPosition(dockRow).X);
         dock.MouseLeave += (_, _) => MovePointer(null);
-        dockRow.SizeChanged += (_, _) => { if (hoverX is not null) targetsDirty = true; };
+        dockRow.SizeChanged += (_, _) => { if (hoverX is not null) QueueDockFrame(); };
         DockWindow.IsVisibleChanged += (_, _) =>
         {
             if (DockWindow.IsVisible) return;
@@ -468,8 +470,8 @@ internal sealed class Desktop
         tile.Width = tile.Height = IconSize;
         RenderOptions.SetBitmapScalingMode(tile, BitmapScalingMode.HighQuality);
         var dot = Surface(White, 2.5);
-        dot.Width = dot.Height = 5;
-        dot.Margin = new Thickness(0, 4, 0, 0);
+        dot.Width = dot.Height = 4;
+        dot.Margin = new Thickness(0, 3, 0, 0);
         dot.Visibility = Visibility.Hidden;
         indicators.Add((pin, dot));
         var column = new StackPanel();
@@ -494,17 +496,16 @@ internal sealed class Desktop
             bounce.BeginAnimation(TranslateTransform.YProperty, jump);
         }, Brushes.Transparent, 4);
         button.Width = SlotSize;
-        var plainButton = new FrameworkElementFactory(typeof(Border));
-        plainButton.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-        var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
-        presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-        presenter.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
-        plainButton.AppendChild(presenter);
-        button.Template = new ControlTemplate(typeof(Button)) { VisualTree = plainButton };
-        button.ToolTip = new ToolTip { Content = pin.Label, Placement = PlacementMode.Top, VerticalOffset = -25,
-            Background = Paint("#EC30343C"), Foreground = White, BorderBrush = Paint("#45FFFFFF"),
-            Padding = new Thickness(10, 5, 10, 5), FontSize = 12 };
-        ToolTipService.SetInitialShowDelay(button, 120);
+        button.Template = dockButtonTemplate;
+        button.ToolTip = new ToolTip
+        {
+            Content = pin.Label, Template = dockLabelTemplate, Foreground = White, FontSize = 12,
+            Placement = PlacementMode.Custom, PlacementTarget = tile,
+            CustomPopupPlacementCallback = (size, target, _) =>
+                [new CustomPopupPlacement(new Point((target.Width - size.Width) / 2, -size.Height - 8), PopupPrimaryAxis.Horizontal)]
+        };
+        ToolTipService.SetInitialShowDelay(button, 330);
+        ToolTipService.SetBetweenShowDelay(button, 180);
         var scale = new ScaleTransform(1, 1);
         var lift = new TranslateTransform();
         var motion = new TransformGroup();
@@ -533,6 +534,33 @@ internal sealed class Desktop
             args.Handled = true;
         };
         return Slot(button, scale, lift);
+    }
+
+    private static ControlTemplate CreateDockButtonTemplate()
+    {
+        var hitArea = new FrameworkElementFactory(typeof(Border));
+        hitArea.SetValue(Border.BackgroundProperty, Brushes.Transparent);
+        var presenter = new FrameworkElementFactory(typeof(ContentPresenter)) { Name = "IconAndDot" };
+        presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        hitArea.AppendChild(presenter);
+        var template = new ControlTemplate(typeof(Button)) { VisualTree = hitArea };
+        var held = new Trigger { Property = ButtonBase.IsPressedProperty, Value = true };
+        held.Setters.Add(new Setter(UIElement.OpacityProperty, 0.68, "IconAndDot"));
+        template.Triggers.Add(held);
+        return template;
+    }
+
+    private static ControlTemplate CreateDockLabelTemplate()
+    {
+        var border = new FrameworkElementFactory(typeof(Border));
+        border.SetValue(Border.BackgroundProperty, Paint("#F1303236"));
+        border.SetValue(Border.BorderBrushProperty, Paint("#42FFFFFF"));
+        border.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+        border.SetValue(Border.CornerRadiusProperty, new CornerRadius(8));
+        border.SetValue(Border.PaddingProperty, new Thickness(9, 4, 9, 5));
+        border.AppendChild(new FrameworkElementFactory(typeof(ContentPresenter)));
+        return new ControlTemplate(typeof(ToolTip)) { VisualTree = border };
     }
 
     private async void ShowDownloads(Button anchor)
@@ -761,13 +789,18 @@ internal sealed class Desktop
     {
         if (!animate || x == hoverX) return;
         hoverX = x;
+        QueueDockFrame();
+    }
+
+    private void QueueDockFrame()
+    {
         targetsDirty = true;
         if (rendering) return;
         rendering = true;
         CompositionTarget.Rendering += AnimateIcons;
     }
 
-    private void CalculateTargets()
+    private void CalculateTargets(double? pointer)
     {
         targetsDirty = false;
         double total = 0;
@@ -775,8 +808,8 @@ internal sealed class Desktop
         {
             if (tile.Scale is null) continue;
             double center = tile.Anchor.TranslatePoint(new Point(tile.Anchor.ActualWidth / 2, 0), dockRow).X;
-            double distance = hoverX is { } pointer ? (pointer - center) / SlotSize : double.PositiveInfinity;
-            tile.Growth = 0.38 * Math.Exp(-0.44 * distance * distance);
+            double distance = pointer.HasValue ? Math.Abs(pointer.Value - center) / (2.25 * SlotSize) : 1;
+            tile.Growth = distance < 1 ? 0.18 * (1 + Math.Cos(Math.PI * distance)) : 0;
             total += tile.Growth * IconSize;
         }
         double prefix = -total / 2;
@@ -794,9 +827,13 @@ internal sealed class Desktop
         if (args is not RenderingEventArgs frame || lastFrame == frame.RenderingTime) return;
         double elapsed = lastFrame is { } previous ? (frame.RenderingTime - previous).TotalMilliseconds : 8;
         lastFrame = frame.RenderingTime;
-        if (Mouse.LeftButton == MouseButtonState.Pressed) return;
         double blend = 1 - Math.Exp(-Math.Clamp(elapsed, 0, 48) / (hoverX is null ? 70 : 49));
-        if (targetsDirty) CalculateTargets();
+        if (targetsDirty) CalculateTargets(hoverX);
+        if (!UpdateIconTransforms(blend)) StopRendering();
+    }
+
+    private bool UpdateIconTransforms(double blend)
+    {
         bool changing = false;
         foreach (var tile in slots)
         {
@@ -816,7 +853,7 @@ internal sealed class Desktop
         }
         changing |= Math.Abs(glassWidth.ScaleX - targetGlassWidth) > 0.002;
         glassWidth.ScaleX = Approach(glassWidth.ScaleX, targetGlassWidth, 0.002, blend);
-        if (!changing) StopRendering();
+        return changing;
     }
 
     private static double Approach(double current, double target, double precision, double blend) => Math.Abs(target - current) <= precision

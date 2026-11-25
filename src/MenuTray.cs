@@ -20,7 +20,7 @@ internal sealed class MenuTray
     private readonly TextBlock sound = Text("Звук", 12, bold: true);
     private readonly TextBlock mute = Text("Выключить звук", 12, bold: true);
     private readonly TextBlock updates = Text("Проверить обновления", 11, Blue, true);
-    private readonly Slider volume = new() { Minimum = 0, Maximum = 1, Width = 164, Margin = new Thickness(0, 3, 0, 0) };
+    private readonly Slider volume = new() { Minimum = 0, Maximum = 1, Margin = new Thickness(0, 3, 0, 0) };
     private readonly FrameworkElement networkIcon;
     private bool settingVolume;
     private string? displayedLanguage;
@@ -58,10 +58,10 @@ internal sealed class MenuTray
         popup.CustomPopupPlacementCallback = (size, target, _) =>
             [new CustomPopupPlacement(new Point(target.Width - size.Width, target.Height + 6), PopupPrimaryAxis.Horizontal)];
 
-        var menu = new StackPanel { Width = 288 };
-        var title = Text("Пункт управления", 17, bold: true);
-        title.Margin = new Thickness(4, 2, 0, 1);
-        details.Margin = new Thickness(4, 0, 0, 9);
+        var menu = new StackPanel { Width = 286 };
+        var title = Text("Пункт управления", 16, bold: true);
+        title.Margin = new Thickness(5, 2, 0, 2);
+        details.Margin = new Thickness(5, 0, 0, 12);
         menu.Children.Add(title);
         menu.Children.Add(details);
 
@@ -76,35 +76,36 @@ internal sealed class MenuTray
         menu.Children.Add(switches);
 
         var audio = new StackPanel();
-        audio.Children.Add(sound);
-        audio.Children.Add(volume);
         var row = new DockPanel();
         var muteButton = Button(mute, "Переключить беззвучный режим", () => { Audio.ToggleMute(); RefreshAudio(); }, Chip, 6);
         DockPanel.SetDock(muteButton, Dock.Right);
         muteButton.Margin = new Thickness(6, 0, 0, 0);
         row.Children.Add(muteButton);
-        volume.Width = 157;
-        volume.HorizontalAlignment = HorizontalAlignment.Stretch;
-        row.Children.Add(audio);
-        var card = Surface(Paint("#45202025"), 14, row);
-        card.Padding = new Thickness(11);
+        row.Children.Add(sound);
+        audio.Children.Add(row);
+        audio.Children.Add(volume);
+        System.Windows.Automation.AutomationProperties.SetName(volume, "Громкость");
+        var card = Surface(Paint("#12FFFFFF"), 10, audio);
+        card.Padding = new Thickness(10, 6, 10, 8);
+        card.Margin = new Thickness(0, 0, 0, 6);
         menu.Children.Add(card);
         volume.ValueChanged += (_, _) => { if (!settingVolume) { Audio.SetLevel(volume.Value); sound.Text = $"Звук · {volume.Value:P0}"; } };
 
         menu.Children.Add(TrayButton("Микшер громкости", () => Desktop.Launch("ms-settings:apps-volume")));
         menu.Children.Add(TrayButton("Питание и батарея", () => Desktop.Launch("ms-settings:powersleep")));
         menu.Children.Add(TrayButton("Трей приложений Luma", appTray));
-        var updateButton = Button(updates, "Обновления Luma", () => { popup.IsOpen = false; update(); }, Card);
-        updateButton.Margin = new Thickness(0, 7, 0, 0);
+        menu.Children.Add(new Border { Height = 1, Background = Line, Margin = new Thickness(6, 5, 6, 4) });
+        var updateButton = Button(updates, "Обновления Luma", () => { popup.IsOpen = false; update(); }, Brushes.Transparent);
+        updateButton.MinHeight = 30;
         updateButton.HorizontalContentAlignment = HorizontalAlignment.Left;
         menu.Children.Add(updateButton);
         release.Changed += () => updates.Text = release.Ready ? "Установить обновление" : release.Status;
-        var container = Surface(Gradient("#EF36383F", "#FA23252A"), 21, menu);
+        var container = Surface(Gradient("#F1333539", "#F824262A"), 16, menu);
         container.Padding = new Thickness(12);
-        container.BorderBrush = Paint("#66FFFFFF");
+        container.BorderBrush = Paint("#44FFFFFF");
         container.BorderThickness = new Thickness(1);
         popup.Child = container;
-        popup.Opened += (_, _) => Entrance(container);
+        popup.Opened += (_, _) => Entrance(container, -4, 0.99);
         controls.Unloaded += (_, _) => popup.IsOpen = false;
     }
 
@@ -112,21 +113,20 @@ internal sealed class MenuTray
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         var icon = Icon(glyph, 15);
-        var badge = Surface(Paint("#FF2D63B1"), 14, icon);
-        badge.Width = badge.Height = 29;
-        badge.Margin = new Thickness(0, 0, 8, 0);
-        row.Children.Add(badge);
+        icon.Margin = new Thickness(1, 0, 9, 0);
+        row.Children.Add(icon);
         row.Children.Add(Text(label, 12, bold: true));
-        var button = Button(row, label, () => { popup.IsOpen = false; action(); }, Paint("#56202025"), 9);
-        button.Margin = new Thickness(3, 0, 3, 4);
+        var button = Button(row, label, () => { popup.IsOpen = false; action(); }, Paint("#14FFFFFF"), 9);
+        button.MinHeight = 37;
+        button.Margin = new Thickness(3, 0, 3, 5);
         button.HorizontalContentAlignment = HorizontalAlignment.Left;
         return button;
     }
 
     private Button TrayButton(string name, Action action)
     {
-        var button = Button(name, () => { popup.IsOpen = false; action(); }, Card);
-        button.Margin = new Thickness(0, 4, 0, 0);
+        var button = Button(Text(name, 13), name, () => { popup.IsOpen = false; action(); }, Brushes.Transparent);
+        button.MinHeight = 29;
         button.HorizontalContentAlignment = HorizontalAlignment.Left;
         return button;
     }

@@ -26,12 +26,12 @@ internal sealed class Launcher
     private readonly Func<AppEntry, bool> isPinned;
     private readonly Func<AppEntry, string?> togglePin;
     private readonly Window window = Overlay("Luma • Приложения", 620, 455);
-    private readonly TextBox query = new() { FontSize = 23, Foreground = White, Background = Brushes.Transparent,
+    private readonly TextBox query = new() { FontSize = 21, Foreground = White, Background = Brushes.Transparent,
         BorderThickness = new Thickness(0), CaretBrush = White, Padding = new Thickness(7, 6, 7, 6), MaxLength = 160 };
     private readonly ListBox results = new() { Background = Brushes.Transparent, BorderThickness = new Thickness(0),
         Foreground = White, HorizontalContentAlignment = HorizontalAlignment.Stretch };
     private readonly TextBlock status = Text("Загружаем приложения…", 12, Muted);
-    private readonly TextBlock placeholder = Text("Поиск приложений", 22, Muted);
+    private readonly TextBlock placeholder = Text("Поиск приложений", 21, Muted);
     private readonly TextBlock section = Text("Приложения", 11, Muted, true);
     private readonly List<string> recent = [];
     private AppEntry[]? catalog;
@@ -50,32 +50,33 @@ internal sealed class Launcher
         results.ItemContainerStyle = ItemStyle();
         ScrollViewer.SetHorizontalScrollBarVisibility(results, ScrollBarVisibility.Disabled);
         var layout = new DockPanel();
-        var search = new DockPanel { Margin = new Thickness(14, 4, 9, 4) };
+        var search = new DockPanel { Height = 52, Margin = new Thickness(16, 0, 14, 0) };
         var lens = Icon("M13,7 A6,6 0 1 1 1,7 A6,6 0 1 1 13,7 M11,11 L18,18", 20, Muted);
         DockPanel.SetDock(lens, Dock.Left);
         search.Children.Add(lens);
         var field = new Grid();
         placeholder.Margin = new Thickness(7, 0, 0, 0);
+        query.VerticalContentAlignment = VerticalAlignment.Center;
         placeholder.IsHitTestVisible = false;
         field.Children.Add(placeholder);
         field.Children.Add(query);
         search.Children.Add(field);
-        var searchCard = new Border { Background = Paint("#2CFFFFFF"), BorderBrush = Line,
+        var searchCard = new Border { BorderBrush = Line,
             BorderThickness = new Thickness(0, 0, 0, 1), Child = search };
         DockPanel.SetDock(searchCard, Dock.Top);
         layout.Children.Add(searchCard);
-        section.Margin = new Thickness(16, 10, 0, 5);
+        section.Margin = new Thickness(16, 11, 0, 5);
         DockPanel.SetDock(section, Dock.Top);
         layout.Children.Add(section);
-        status.Margin = new Thickness(16, 8, 8, 10);
+        status.Margin = new Thickness(16, 8, 12, 10);
         DockPanel.SetDock(status, Dock.Bottom);
         layout.Children.Add(status);
         results.Margin = new Thickness(7, 0, 7, 0);
         layout.Children.Add(results);
-        var panel = Surface(Gradient("#F62D2F36", "#FB202126"), 24, layout);
-        panel.BorderBrush = Paint("#68FFFFFF");
+        var panel = Surface(Gradient("#F1313337", "#F824262A"), 16, layout);
+        panel.BorderBrush = Paint("#44FFFFFF");
         panel.BorderThickness = new Thickness(1);
-        panel.Padding = new Thickness(2);
+        panel.Padding = new Thickness(1);
         window.Content = panel;
         System.Windows.Automation.AutomationProperties.SetName(query, "Поиск приложений");
         FocusManager.SetFocusedElement(window, query);
@@ -155,7 +156,7 @@ internal sealed class Launcher
         if (window.IsActive) Keyboard.Focus(query);
         if (query.Text.Length == 0) Render();
         else query.Clear();
-        if (window.Content is FrameworkElement panel) Entrance(panel, 10, 0.98);
+        if (window.Content is FrameworkElement panel) Entrance(panel, 4, 0.995);
         if (catalog is null && !loading) Load();
     }
 
@@ -263,8 +264,8 @@ internal sealed class Launcher
             icon.Margin = new Thickness(0, 0, 12, 0);
             DockPanel.SetDock(icon, Dock.Left);
             row.Children.Add(icon);
-            row.Children.Add(Text(app.Name, 14, bold: true));
-            var result = new ListBoxItem { Content = row, Tag = app, Padding = new Thickness(9, 5, 9, 5),
+            row.Children.Add(Text(app.Name, 14));
+            var result = new ListBoxItem { Content = row, Tag = app, Padding = new Thickness(9, 6, 9, 6),
                 Foreground = White, HorizontalContentAlignment = HorizontalAlignment.Stretch };
             System.Windows.Automation.AutomationProperties.SetName(result, app.Name);
             results.Items.Add(result);

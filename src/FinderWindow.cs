@@ -24,14 +24,14 @@ namespace LumaShell;
 
 internal sealed class FinderWindow : Window
 {
-    private static readonly Brush BackgroundColor = Paint("#FF202720");
-    private static readonly Brush SidebarColor = Paint("#FF1B211C");
-    private static readonly Brush Stroke = Paint("#FF3B463D");
-    private static readonly Brush ToolColor = Paint("#FF29332B");
-    private static readonly Brush Stripe = Paint("#78364137");
-    private static readonly Brush Selection = Paint("#FF274D68");
-    private static readonly Brush Secondary = Paint("#FFADB8AF");
-    private static readonly Brush Accent = Paint("#FF84C8FF");
+    private static readonly Brush BackgroundColor = Paint("#FF242528");
+    private static readonly Brush SidebarColor = Paint("#FF2D2E32");
+    private static readonly Brush Stroke = Paint("#26FFFFFF");
+    private static readonly Brush ToolColor = Paint("#13FFFFFF");
+    private static readonly Brush Stripe = Paint("#09FFFFFF");
+    private static readonly Brush Selection = Paint("#FF315983");
+    private static readonly Brush Secondary = Paint("#FFC0C1C8");
+    private static readonly Brush Accent = Paint("#FF91BEF1");
     private static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private const string FolderGlyph = "M1,5 H8 L10,7 H19 V17 H1 Z";
     private const string FinderDragFormat = "Luma Finder.Source";
@@ -41,7 +41,7 @@ internal sealed class FinderWindow : Window
         SelectionMode = SelectionMode.Extended, Margin = new Thickness(10, 0, 10, 0),
         HorizontalContentAlignment = HorizontalAlignment.Stretch
     };
-    private readonly TextBlock heading = Text("Проводник", 19, bold: true);
+    private readonly TextBlock heading = Text("Проводник", 17, bold: true);
     private readonly TextBlock status = Text("", 11, Secondary);
     private readonly StackPanel pathBar = new() { Orientation = Orientation.Horizontal };
     private readonly TextBox search = Field("Поиск в папке");
@@ -53,6 +53,7 @@ internal sealed class FinderWindow : Window
     private readonly Button forward;
     private readonly Button up;
     private readonly GridViewColumn nameColumn = new() { Width = 300 };
+    private readonly Dictionary<SortBy, (GridViewColumnHeader Header, FrameworkElement Arrow)> sortHeaders = [];
     private readonly DispatcherTimer refreshTimer = new() { Interval = TimeSpan.FromMilliseconds(350) };
     private FinderEntry[] entries = [];
     private CancellationTokenSource? load;
@@ -98,19 +99,16 @@ internal sealed class FinderWindow : Window
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(184), MinWidth = 146, MaxWidth = 260 });
         layout.ColumnDefinitions.Add(new ColumnDefinition());
         var sidebar = new DockPanel();
-        var lights = new StackPanel { Orientation = Orientation.Horizontal, Height = 43, Margin = new Thickness(12, 0, 0, 0) };
-        lights.Children.Add(Light("#FFFF605C", "Закрыть окно", Close));
-        if (pickerTitle is null)
-            lights.Children.Add(Light("#FFFFBD44", "Свернуть окно", () => WindowState = WindowState.Minimized));
-        lights.Children.Add(Light("#FF29C951", "Развернуть или восстановить окно",
-            () => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized));
+        var lights = new StackPanel { Orientation = Orientation.Horizontal, Height = 50, Margin = new Thickness(11, 0, 0, 0) };
+        lights.Children.Add(WindowControls.Close(this, "Закрыть окно"));
+        if (pickerTitle is null) lights.Children.Add(WindowControls.Minimize(this));
+        lights.Children.Add(WindowControls.Zoom(this));
         DockPanel.SetDock(lights, Dock.Top);
         sidebar.Children.Add(lights);
         sidebar.Children.Add(new ScrollViewer { Content = places, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        var sideSurface = Surface(SidebarColor, 15, sidebar);
+        var sideSurface = Surface(SidebarColor, 0, sidebar);
         sideSurface.BorderBrush = Stroke;
-        sideSurface.BorderThickness = new Thickness(1);
-        sideSurface.Margin = new Thickness(8, 8, 0, 8);
+        sideSurface.BorderThickness = new Thickness(0, 0, 1, 0);
         layout.Children.Add(sideSurface);
         var sidebarDivider = new GridSplitter
         {
@@ -135,39 +133,43 @@ internal sealed class FinderWindow : Window
         }
         catch (IOException) { }
 
-        var content = new DockPanel();
+        var content = new DockPanel { Background = Paint("#E8242528") };
         Grid.SetColumn(content, 1);
         layout.Children.Add(content);
-        var toolbar = new DockPanel { Height = 50, Margin = new Thickness(12, 3, 10, 2) };
-        var navigation = new StackPanel { Orientation = Orientation.Horizontal };
+        var toolbar = new DockPanel { Height = 52, Margin = new Thickness(10, 0, 14, 0) };
+        var navigation = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         back = Tool("M13,3 L6,10 L13,17", "Назад", () => GoHistory(-1));
         forward = Tool("M7,3 L14,10 L7,17", "Вперёд", () => GoHistory(1));
         up = Tool("M3,12 L10,5 L17,12", "На уровень выше", GoUp);
         navigation.Children.Add(back);
         navigation.Children.Add(forward);
         navigation.Children.Add(up);
-        var navSurface = Pill(navigation);
-        DockPanel.SetDock(navSurface, Dock.Left);
-        toolbar.Children.Add(navSurface);
+        DockPanel.SetDock(navigation, Dock.Left);
+        toolbar.Children.Add(navigation);
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 8, 0) };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 9, 0) };
         actions.Children.Add(Tool("M2,4 H18 M2,10 H14 M2,16 H10", "Сортировать файлы", ShowSortMenu));
         if (pickerTitle is null)
             actions.Children.Add(Tool("M3,10 H4 M9,10 H10 M15,10 H16", "Действия с папкой", ShowFolderMenu));
-        var actionSurface = Pill(actions);
-        DockPanel.SetDock(actionSurface, Dock.Right);
+        DockPanel.SetDock(actions, Dock.Right);
         var searchLayout = new DockPanel();
         var lens = Icon("M13,7 A6,6 0 1 1 1,7 A6,6 0 1 1 13,7 M11,11 L18,18", 15, Secondary);
         lens.Margin = new Thickness(9, 0, 0, 0);
         DockPanel.SetDock(lens, Dock.Left);
         searchLayout.Children.Add(lens);
         searchLayout.Children.Add(WithPlaceholder(search, "Поиск"));
-        var searchSurface = Pill(searchLayout);
-        searchSurface.Width = 150;
+        var searchSurface = Surface(ToolColor, 8, searchLayout);
+        searchSurface.VerticalAlignment = VerticalAlignment.Center;
+        searchSurface.Width = 154;
+        searchSurface.Height = 30;
+        searchSurface.BorderBrush = Stroke;
+        searchSurface.BorderThickness = new Thickness(1);
+        search.IsKeyboardFocusWithinChanged += (_, _) => searchSurface.BorderBrush = search.IsKeyboardFocusWithin ? Accent : Stroke;
         WindowChrome.SetIsHitTestVisibleInChrome(searchSurface, true);
         DockPanel.SetDock(searchSurface, Dock.Right);
         toolbar.Children.Add(searchSurface);
-        toolbar.Children.Add(actionSurface);
+        toolbar.Children.Add(actions);
 
         var nameArea = new Grid { Margin = new Thickness(11, 0, 8, 0) };
         nameArea.Children.Add(heading);
@@ -186,7 +188,7 @@ internal sealed class FinderWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, CanContentScroll = false };
         pathBar.SizeChanged += (_, _) => pathScroll.ScrollToRightEnd();
         footerContent.Children.Add(pathScroll);
-        var footer = new Border { Height = 32, BorderBrush = Stroke, BorderThickness = new Thickness(0, 1, 0, 0), Child = footerContent };
+        var footer = new Border { Height = 30, BorderBrush = Stroke, BorderThickness = new Thickness(0, 1, 0, 0), Child = footerContent };
         if (pickerTitle is not null)
         {
             list.SelectionMode = SelectionMode.Single;
@@ -268,8 +270,8 @@ internal sealed class FinderWindow : Window
         chrome.GlassFrameThickness = new Thickness(-1);
         target.BackgroundColor = Colors.Transparent;
         Background = Brushes.Transparent;
-        frame.Background = Paint("#B21C2821");
-        sidebar.Background = Paint("#A117211A");
+        frame.Background = Brushes.Transparent;
+        sidebar.Background = Paint("#BE292B31");
     }
 
     [DllImport("dwmapi.dll")]
@@ -324,52 +326,19 @@ internal sealed class FinderWindow : Window
         return grid;
     }
 
-    private static Button Light(string color, string label, Action action)
-    {
-        var light = new Grid { Width = 13, Height = 13 };
-        light.Children.Add(new System.Windows.Shapes.Ellipse { Fill = Paint(color), Stroke = Paint("#4D000000"), StrokeThickness = 0.6 });
-        string symbol = color switch
-        {
-            "#FFFF605C" => "M4,4 L12,12 M12,4 L4,12",
-            "#FFFFBD44" => "M3,8 H13",
-            _ => "M4,11 V5 H10 M6,13 H12 V7"
-        };
-        var glyph = Icon(symbol, 7, Paint("#B825241F"));
-        glyph.HorizontalAlignment = HorizontalAlignment.Center;
-        glyph.Visibility = Visibility.Hidden;
-        light.Children.Add(glyph);
-        var button = Button(light, label, action, Brushes.Transparent, 0);
-        button.Width = 23;
-        button.FocusVisualStyle = null;
-        button.MouseEnter += (_, _) => glyph.Visibility = Visibility.Visible;
-        button.MouseLeave += (_, _) => glyph.Visibility = Visibility.Hidden;
-        WindowChrome.SetIsHitTestVisibleInChrome(button, true);
-        return button;
-    }
-
     private static Button Tool(string path, string label, Action action)
     {
         var button = Button(Icon(path, 16), label, action, Brushes.Transparent, 7);
-        button.Width = 36;
-        button.Height = 32;
+        button.Width = 31;
+        button.Height = 30;
         WindowChrome.SetIsHitTestVisibleInChrome(button, true);
         return button;
-    }
-
-    private static Border Pill(UIElement content)
-    {
-        var border = Surface(ToolColor, 16, content);
-        border.VerticalAlignment = VerticalAlignment.Center;
-        border.BorderBrush = Stroke;
-        border.BorderThickness = new Thickness(1);
-        border.MinHeight = 34;
-        return border;
     }
 
     private void AddSection(string label)
     {
         var title = Text(label, 11, Secondary, true);
-        title.Margin = new Thickness(15, 14, 0, 4);
+        title.Margin = new Thickness(19, 16, 0, 5);
         places.Children.Add(title);
     }
 
@@ -377,14 +346,14 @@ internal sealed class FinderWindow : Window
     {
         if (string.IsNullOrWhiteSpace(path)) return;
         var row = new StackPanel { Orientation = Orientation.Horizontal };
-        var icon = Icon(glyph, 16);
-        icon.Margin = new Thickness(0, 0, 9, 0);
+        var icon = Icon(glyph, 16, Accent);
+        icon.Margin = new Thickness(0, 0, 10, 0);
         row.Children.Add(icon);
         row.Children.Add(Text(label, 13));
         var button = Button(row, label, () => Navigate(path), Brushes.Transparent, 9);
         button.HorizontalContentAlignment = HorizontalAlignment.Left;
-        button.Margin = new Thickness(7, 1, 7, 1);
-        button.Height = 33;
+        button.Margin = new Thickness(9, 1, 9, 1);
+        button.Height = 30;
         places.Children.Add(button);
         placeButtons.Add((button, path));
     }
@@ -399,6 +368,7 @@ internal sealed class FinderWindow : Window
         view.Columns.Add(Column("Размер", nameof(FinderEntry.SizeLabel), 78, SortBy.Size));
         view.Columns.Add(Column("Тип", nameof(FinderEntry.Kind), 82, SortBy.Kind));
         view.ColumnHeaderContainerStyle = HeaderStyle();
+        UpdateSortHeaders();
         list.View = view;
         list.ItemContainerStyle = RowStyle();
         list.AlternationCount = 2;
@@ -496,9 +466,31 @@ internal sealed class FinderWindow : Window
 
     private GridViewColumnHeader ColumnHeader(string label, SortBy column)
     {
-        var header = new GridViewColumnHeader { Content = label };
+        var dock = new DockPanel();
+        var arrow = Icon("M2,7 L7,2 L12,7", 8, Secondary);
+        arrow.Margin = new Thickness(3, 0, 8, 0);
+        arrow.RenderTransformOrigin = new Point(0.5, 0.5);
+        DockPanel.SetDock(arrow, Dock.Right);
+        dock.Children.Add(arrow);
+        dock.Children.Add(new TextBlock { Text = label, TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center });
+        var header = new GridViewColumnHeader { Content = dock };
+        AutomationProperties.SetName(header, label);
+        sortHeaders.Add(column, (header, arrow));
         header.Click += (_, _) => ChangeSort(column);
         return header;
+    }
+
+    private void UpdateSortHeaders()
+    {
+        foreach (var (column, controls) in sortHeaders)
+        {
+            bool current = column == sort;
+            controls.Header.Foreground = current ? White : Secondary;
+            controls.Arrow.Visibility = current ? Visibility.Visible : Visibility.Collapsed;
+            if (current) controls.Arrow.RenderTransform = descending ? new RotateTransform(180) : Transform.Identity;
+            AutomationProperties.SetItemStatus(controls.Header, current ? descending ? "По убыванию" : "По возрастанию" : "");
+        }
     }
 
     private GridViewColumn Column(string label, string property, double width, SortBy column)
@@ -542,7 +534,8 @@ internal sealed class FinderWindow : Window
         border.AppendChild(text);
         var style = new Style(typeof(GridViewColumnHeader));
         style.Setters.Add(new Setter(ForegroundProperty, Secondary));
-        style.Setters.Add(new Setter(FontSizeProperty, 11d));
+        style.Setters.Add(new Setter(FontSizeProperty, 12d));
+        style.Setters.Add(new Setter(FontWeightProperty, FontWeights.SemiBold));
         style.Setters.Add(new Setter(HeightProperty, 28d));
         style.Setters.Add(new Setter(TemplateProperty, new ControlTemplate(typeof(GridViewColumnHeader)) { VisualTree = border }));
         return style;
@@ -563,7 +556,8 @@ internal sealed class FinderWindow : Window
         AddRowTrigger(IsMouseOverProperty, true, ToolColor);
         AddRowTrigger(ListBoxItem.IsSelectedProperty, true, Selection);
         var style = new Style(typeof(ListViewItem));
-        style.Setters.Add(new Setter(HeightProperty, 26d));
+        style.Setters.Add(new Setter(HeightProperty, 29d));
+        style.Setters.Add(new Setter(FontSizeProperty, 13d));
         style.Setters.Add(new Setter(ForegroundProperty, White));
         style.Setters.Add(new Setter(TemplateProperty, template));
         return style;
@@ -738,11 +732,10 @@ internal sealed class FinderWindow : Window
         foreach (var (button, path) in placeButtons)
         {
             bool selected = string.Equals(Path.TrimEndingDirectorySeparator(path), folder, StringComparison.OrdinalIgnoreCase);
-            button.Background = selected ? Stripe : Brushes.Transparent;
+            button.Background = selected ? ToolColor : Brushes.Transparent;
             if (button.Content is StackPanel row)
             {
-                if (row.Children[0] is System.Windows.Shapes.Path icon) icon.Stroke = selected ? Accent : White;
-                if (row.Children[1] is TextBlock text) text.Foreground = selected ? Accent : White;
+                if (row.Children[1] is TextBlock text) text.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
             }
         }
     }
@@ -778,6 +771,7 @@ internal sealed class FinderWindow : Window
     {
         descending = sort == column ? !descending : column is SortBy.Modified or SortBy.Size;
         sort = column;
+        UpdateSortHeaders();
         RenderEntries();
     }
 
@@ -968,7 +962,7 @@ internal sealed class FinderWindow : Window
             else GoHistory(args.SystemKey == Key.Left ? -1 : 1);
         }
         else if (args.Key == Key.F5) Reload();
-        else if (pickerTitle is null && args.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.None &&
+        else if (pickerTitle is null && args.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.None && !WindowControls.HasFocus &&
             !search.IsKeyboardFocusWithin && !address.IsKeyboardFocusWithin && list.SelectedItem is FinderEntry)
         {
             if (!args.IsRepeat) ToggleQuickLook();

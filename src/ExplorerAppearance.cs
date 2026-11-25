@@ -43,13 +43,13 @@ internal sealed class ExplorerAppearance
             Apply(window.Handle, frame, CornerPreference, 2); // DWMWCP_ROUND
             // COLORREF stores red in the low byte.
             uint border = dark
-                ? (active ? 0x005D715Eu : 0x00384238u)
-                : (active ? 0x00A2B2A2u : 0x00CED6CEu);
+                ? (active ? 0x00645E59u : 0x00453F3Bu)
+                : (active ? 0x00B5B0ADu : 0x00D6D2CFu);
             Apply(window.Handle, frame, BorderColor, border);
             if (dark)
             {
-                Apply(window.Handle, frame, CaptionColor, active ? 0x00202720u : 0x001E231Eu);
-                Apply(window.Handle, frame, CaptionTextColor, active ? 0x00EDF2EEu : 0x00C1CCC3u);
+                Apply(window.Handle, frame, CaptionColor, active ? 0x00282524u : 0x00272423u);
+                Apply(window.Handle, frame, CaptionTextColor, active ? 0x00F4F2EFu : 0x00C9C5C2u);
             }
             else
             {

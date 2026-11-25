@@ -60,9 +60,7 @@ internal sealed class QuickLook : Window
 
         var layout = new DockPanel();
         var header = new DockPanel { Height = 49, Margin = new Thickness(11, 0, 10, 0) };
-        var close = Button(new System.Windows.Shapes.Ellipse { Width = 12, Height = 12, Fill = Paint("#FFFF605C") },
-            "Закрыть быстрый просмотр", Close, Brushes.Transparent, 6);
-        WindowChrome.SetIsHitTestVisibleInChrome(close, true);
+        var close = WindowControls.Close(this, "Закрыть быстрый просмотр");
         DockPanel.SetDock(close, Dock.Left);
         header.Children.Add(close);
         var open = Button(entry.IsDirectory ? "Перейти к папке" : "Открыть", () =>
@@ -72,6 +70,8 @@ internal sealed class QuickLook : Window
             else if (!Desktop.Launch(entry.Path)) return;
             Close();
         });
+        open.Height = 28;
+        open.VerticalAlignment = VerticalAlignment.Center;
         WindowChrome.SetIsHitTestVisibleInChrome(open, true);
         DockPanel.SetDock(open, Dock.Right);
         header.Children.Add(open);

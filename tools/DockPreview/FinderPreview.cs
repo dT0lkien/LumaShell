@@ -57,12 +57,18 @@ internal static class FinderPreview
                     ".jpg" => new JpegBitmapEncoder(),
                     _ => null
                 };
-                if (fixture is not null)
+                if (fixture is JpegBitmapEncoder)
+                {
+                    using var photo = assembly.GetManifestResourceStream("LumaShell.AlpineLake.jpg")
+                        ?? throw new InvalidOperationException("Missing bundled photograph");
+                    photo.CopyTo(file);
+                }
+                else if (fixture is not null)
                 {
                     fixture.Frames.Add(BitmapFrame.Create(TestPhoto()));
                     fixture.Save(file);
                 }
-                file.SetLength((i + 1) * 208471);
+                file.SetLength(Math.Max(file.Length, (i + 1) * 208471L));
             }
             File.SetLastWriteTime(path, new DateTime(2026, 11, 11, 10, 20, 0).AddHours(-3 * i));
         }
@@ -87,6 +93,7 @@ internal static class FinderPreview
             if (list.Items.Count != 2) throw new InvalidOperationException("Folder search did not filter the displayed rows.");
             search.Clear();
 
+            VerifyCaption(window, "Закрыть окно");
             VerifyShellMenu(assembly, desktop, sandbox);
             VerifyLauncherMenu(assembly, Path.Combine(sandbox, "Sample.exe"));
             VerifyTrayActions(assembly);
@@ -102,7 +109,9 @@ internal static class FinderPreview
             type.GetMethod("ToggleQuickLook", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
             var preview = application.Windows.OfType<Window>().Single(candidate => candidate.Owner == window);
             PumpUntil(() => Find<TextBox>(preview, box => box.IsReadOnly && box.Text == "Luma") is not null, "rendering Quick Look");
-            preview.Close();
+            var previewClose = VerifyCaption(preview, "Закрыть быстрый просмотр");
+            previewClose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (preview.IsVisible) throw new InvalidOperationException("The preview close control did not close its window.");
             VerifyPdfPreview(assembly, window, projects, list);
             VerifyPhotoPreview(window, desktop, list);
             open.Invoke(window, [desktop]);
@@ -127,6 +136,71 @@ internal static class FinderPreview
             PumpUntil(() => decoders.CurrentCount == 3, "finishing thumbnail reads before cleanup");
             Directory.Delete(sandbox, recursive: true);
         }
+    }
+
+    private static Button VerifyCaption(Window window, string label)
+    {
+        var button = Find<Button>(window, item => AutomationProperties.GetName(item) == label)
+            ?? throw new InvalidOperationException("Missing caption control: " + label);
+        window.UpdateLayout();
+        if (button.ActualWidth < 24 || button.ActualHeight < 24 || button.InputHitTest(new Point(2, 2)) is null)
+            throw new InvalidOperationException("The close control lost its transparent hit area.");
+        window.Activate();
+        var center = button.PointToScreen(new Point(button.ActualWidth / 2, button.ActualHeight / 2));
+        var outside = button.PointToScreen(new Point(button.ActualWidth / 2, button.ActualHeight + 12));
+        if (!GetCursorPos(out var previous)) throw new InvalidOperationException("Could not read the cursor position.");
+        bool pressed = false;
+        try
+        {
+            SetCursorPos((int)outside.X, (int)outside.Y);
+            PumpUntil(() => !button.IsMouseOver, "leaving the window control");
+            CheckPaintedDisc(button);
+            SetCursorPos((int)center.X, (int)center.Y);
+            PumpUntil(() => button.IsMouseOver, "hovering the window control");
+            var hover = CheckPaintedDisc(button);
+            pressed = true;
+            mouse_event(0x0002, 0, 0, 0, 0);
+            PumpUntil(() => button.IsPressed, "pressing the window control");
+            if (CheckPaintedDisc(button).SequenceEqual(hover))
+                throw new InvalidOperationException("The caption disc did not show a pressed state.");
+        }
+        finally
+        {
+            if (pressed)
+            {
+                SetCursorPos((int)outside.X, (int)outside.Y);
+                mouse_event(0x0004, 0, 0, 0, 0);
+            }
+            try { PumpUntil(() => !button.IsPressed && !button.IsMouseCaptured, "releasing the window control"); }
+            finally { SetCursorPos(previous.X, previous.Y); }
+        }
+        if (!window.IsVisible) throw new InvalidOperationException("Releasing outside the close control closed the window.");
+        return button;
+    }
+
+    private static byte[] CheckPaintedDisc(Button button)
+    {
+        var bounds = new Rect(button.RenderSize);
+        var drawing = new DrawingVisual();
+        using (var context = drawing.RenderOpen())
+            context.DrawRectangle(new VisualBrush(button) { ViewboxUnits = BrushMappingMode.Absolute, Viewbox = bounds },
+                null, bounds);
+        int w = (int)Math.Ceiling(bounds.Width), h = (int)Math.Ceiling(bounds.Height);
+        var bitmap = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(drawing);
+        var pixels = new byte[4 * w * h];
+        bitmap.CopyPixels(pixels, 4 * w, 0);
+        int visible = 0;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                if (pixels[4 * (y * w + x) + 3] < 20) continue;
+                visible++;
+                if (Math.Abs(x + 0.5 - w / 2d) > 8 || Math.Abs(y + 0.5 - h / 2d) > 8)
+                    throw new InvalidOperationException("The window control painted outside its disc.");
+            }
+        if (visible < 90) throw new InvalidOperationException("The caption disc did not render.");
+        return pixels;
     }
 
     private static void VerifyPhotoPreview(Window finder, string folder, ListView list)
@@ -493,6 +567,8 @@ internal static class FinderPreview
     private static extern bool IsIconic(nint window);
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(nint window, int command);
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out System.Drawing.Point point);
     [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")]
