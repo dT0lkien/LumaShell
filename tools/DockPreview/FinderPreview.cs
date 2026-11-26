@@ -57,18 +57,12 @@ internal static class FinderPreview
                     ".jpg" => new JpegBitmapEncoder(),
                     _ => null
                 };
-                if (fixture is JpegBitmapEncoder)
-                {
-                    using var photo = assembly.GetManifestResourceStream("LumaShell.AlpineLake.jpg")
-                        ?? throw new InvalidOperationException("Missing bundled photograph");
-                    photo.CopyTo(file);
-                }
-                else if (fixture is not null)
+                if (fixture is not null)
                 {
                     fixture.Frames.Add(BitmapFrame.Create(TestPhoto()));
                     fixture.Save(file);
                 }
-                file.SetLength(Math.Max(file.Length, (i + 1) * 208471L));
+                file.SetLength((i + 1) * 208471);
             }
             File.SetLastWriteTime(path, new DateTime(2026, 11, 11, 10, 20, 0).AddHours(-3 * i));
         }

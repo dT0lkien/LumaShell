@@ -15,24 +15,23 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        if (args.Length > 1 && args[0] != "--verify-child")
+        if (args.Length > 0 && args[0] == "--verify-finder")
         {
-            RunAndReportWindowsErrors(args);
-            return;
-        }
-        if (args.Length > 0 && args[0] == "--verify-child") args = args[1..];
-        var assembly = Assembly.Load("LumaShell");
-        string output = args.Length == 0 ? "Dock-Preview.png" : args[0];
-        RenderDock(output);
-        if (args.Length > 1)
-        {
-            try { FinderPreview.VerifyAndRender(assembly, args[1]); }
+            try { FinderPreview.VerifyAndRender(Assembly.Load("LumaShell"), args[1]); }
             catch (Exception error)
             {
                 Console.Error.WriteLine(error);
                 Environment.ExitCode = 1;
             }
+            return;
         }
+        if (args.Length > 1)
+        {
+            // Run each WPF renderer in its own process, with its own Dispatcher lifetime.
+            if (RunAndReportWindowsErrors(args[0])) RunAndReportWindowsErrors("--verify-finder", args[1]);
+            return;
+        }
+        RenderDock(args.Length == 0 ? "Dock-Preview.png" : args[0]);
     }
 
     private static void RenderDock(string output)
@@ -114,17 +113,16 @@ internal static class Program
 
     private static void NoAction() { }
 
-    private static void RunAndReportWindowsErrors(string[] args)
+    private static bool RunAndReportWindowsErrors(params string[] args)
     {
         var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
         if (Path.GetFileNameWithoutExtension(start.FileName).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
             start.ArgumentList.Add(typeof(Program).Assembly.Location);
-        start.ArgumentList.Add("--verify-child");
         foreach (var arg in args) start.ArgumentList.Add(arg);
         using var child = Process.Start(start)!;
         child.WaitForExit();
         Environment.ExitCode = child.ExitCode;
-        if (child.ExitCode == 0) return;
+        if (child.ExitCode == 0) return true;
         Console.Error.WriteLine($"The Windows preview process exited with {child.ExitCode} (0x{child.ExitCode:X8}).");
 
         var query = new ProcessStartInfo("wevtutil.exe") { UseShellExecute = false, RedirectStandardOutput = true };
@@ -134,5 +132,6 @@ internal static class Program
         foreach (string entry in events.StandardOutput.ReadToEnd().Split("\r\n\r\n"))
             if (entry.Contains("DockPreview", StringComparison.OrdinalIgnoreCase)) Console.Error.WriteLine(entry);
         events.WaitForExit();
+        return false;
     }
 }
