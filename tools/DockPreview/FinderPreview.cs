@@ -150,18 +150,26 @@ internal static class FinderPreview
         var outside = button.PointToScreen(new Point(button.ActualWidth / 2, button.ActualHeight + 12));
         if (!GetCursorPos(out var previous)) throw new InvalidOperationException("Could not read the cursor position.");
         bool pressed = false;
+        var content = (FrameworkElement)window.Content;
+        var origin = button.TranslatePoint(new Point(), content);
+        var crop = new Int32Rect((int)Math.Round(origin.X), (int)Math.Round(origin.Y),
+            (int)Math.Round(button.ActualWidth), (int)Math.Round(button.ActualHeight));
         try
         {
             SetCursorPos((int)outside.X, (int)outside.Y);
             PumpUntil(() => !button.IsMouseOver, "leaving the window control");
-            CheckPaintedDisc(button);
+            byte[] background;
+            button.Opacity = 0;
+            try { background = CaptionPixels(content, crop); }
+            finally { button.ClearValue(UIElement.OpacityProperty); }
+            CheckPaintedDisc(content, crop, background, "idle");
             SetCursorPos((int)center.X, (int)center.Y);
             PumpUntil(() => button.IsMouseOver, "hovering the window control");
-            var hover = CheckPaintedDisc(button);
+            var hover = CheckPaintedDisc(content, crop, background, "hover");
             pressed = true;
             mouse_event(0x0002, 0, 0, 0, 0);
             PumpUntil(() => button.IsPressed, "pressing the window control");
-            if (CheckPaintedDisc(button).SequenceEqual(hover))
+            if (CheckPaintedDisc(content, crop, background, "pressed").SequenceEqual(hover))
                 throw new InvalidOperationException("The caption disc did not show a pressed state.");
         }
         finally
@@ -178,26 +186,28 @@ internal static class FinderPreview
         return button;
     }
 
-    private static byte[] CheckPaintedDisc(Button button)
+    private static byte[] CaptionPixels(FrameworkElement content, Int32Rect crop)
     {
-        var bounds = new Rect(button.RenderSize);
-        var drawing = new DrawingVisual();
-        using (var context = drawing.RenderOpen())
-            context.DrawRectangle(new VisualBrush(button) { ViewboxUnits = BrushMappingMode.Absolute, Viewbox = bounds },
-                null, bounds);
-        int w = (int)Math.Ceiling(bounds.Width), h = (int)Math.Ceiling(bounds.Height);
-        var bitmap = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(drawing);
-        var pixels = new byte[4 * w * h];
-        bitmap.CopyPixels(pixels, 4 * w, 0);
+        var bitmap = new RenderTargetBitmap(crop.X + crop.Width, crop.Y + crop.Height, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(content);
+        var pixels = new byte[4 * crop.Width * crop.Height];
+        bitmap.CopyPixels(crop, pixels, 4 * crop.Width, 0);
+        return pixels;
+    }
+
+    private static byte[] CheckPaintedDisc(FrameworkElement content, Int32Rect crop, byte[] background, string state)
+    {
+        int w = crop.Width, h = crop.Height;
+        var pixels = CaptionPixels(content, crop);
         int visible = 0;
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
             {
-                if (pixels[4 * (y * w + x) + 3] < 20) continue;
+                int i = 4 * (y * w + x);
+                if (pixels.AsSpan(i, 4).SequenceEqual(background.AsSpan(i, 4))) continue;
                 visible++;
                 if (Math.Abs(x + 0.5 - w / 2d) > 8 || Math.Abs(y + 0.5 - h / 2d) > 8)
-                    throw new InvalidOperationException("The window control painted outside its disc.");
+                    throw new InvalidOperationException($"The {state} caption painted outside its disc at ({x}, {y}) in {w}×{h}.");
             }
         if (visible < 90) throw new InvalidOperationException("The caption disc did not render.");
         return pixels;

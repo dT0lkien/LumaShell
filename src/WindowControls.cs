@@ -44,8 +44,8 @@ internal static class WindowControls
         var button = new Button
         {
             Width = 24, Height = 28, VerticalAlignment = VerticalAlignment.Center,
-            Template = Template, Content = mark, Background = Visuals.Paint(color),
-            FocusVisualStyle = null, ToolTip = label
+            Template = Template, Content = mark, Background = Brushes.Transparent, Foreground = Visuals.Paint(color),
+            OverridesDefaultStyle = true, FocusVisualStyle = null, ToolTip = label
         };
         WindowChrome.SetIsHitTestVisibleInChrome(button, true);
         AutomationProperties.SetName(button, label);
