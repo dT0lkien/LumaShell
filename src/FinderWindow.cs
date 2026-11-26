@@ -22,7 +22,7 @@ using static LumaShell.Visuals;
 
 namespace LumaShell;
 
-internal sealed class FinderWindow : Window
+internal sealed partial class FinderWindow : Window
 {
     private static readonly Brush BackgroundColor = Paint("#FF242528");
     private static readonly Brush SidebarColor = Paint("#FF2D2E32");
@@ -34,7 +34,6 @@ internal sealed class FinderWindow : Window
     private static readonly Brush Accent = Paint("#FF91BEF1");
     private static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private const string FolderGlyph = "M1,5 H8 L10,7 H19 V17 H1 Z";
-    private const string FinderDragFormat = "Luma Finder.Source";
     private readonly ListView list = new()
     {
         Background = Brushes.Transparent, BorderThickness = new Thickness(0),
@@ -69,7 +68,6 @@ internal sealed class FinderWindow : Window
     private readonly string? pickerTitle;
     private Button? chooseFolder;
     private string? pickedFolder;
-    private Point? dragStart;
 
     internal FinderWindow() : this(null) { }
 
@@ -214,6 +212,7 @@ internal sealed class FinderWindow : Window
         SourceInitialized += (_, _) => ApplyBackdrop(chrome, frame, sideSurface);
 
         ConfigureList();
+        if (pickerTitle is null) ConfigureFileDrag();
         search.TextChanged += (_, _) => RenderEntries();
         address.KeyDown += (_, args) =>
         {
@@ -383,24 +382,6 @@ internal sealed class FinderWindow : Window
         };
         list.SelectionChanged += (_, _) => UpdateStatus();
         if (pickerTitle is not null) return;
-        list.PreviewMouseLeftButtonDown += (_, args) =>
-            dragStart = RowUnder(args.OriginalSource) is null ? null : args.GetPosition(list);
-        list.PreviewMouseMove += (_, args) =>
-        {
-            if (args.LeftButton != MouseButtonState.Pressed) { dragStart = null; return; }
-            if (dragStart is not { } start) return;
-            var pointer = args.GetPosition(list);
-            if (Math.Abs(pointer.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
-                Math.Abs(pointer.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
-            dragStart = null;
-            if (SelectedPaths() is { Length: > 0 } paths)
-            {
-                var data = new DataObject(DataFormats.FileDrop, paths);
-                data.SetData(FinderDragFormat, true);
-                DragDrop.DoDragDrop(list, data, DragDropEffects.Copy);
-            }
-            args.Handled = true;
-        };
         list.PreviewMouseRightButtonDown += (_, args) =>
         {
             if (RowUnder(args.OriginalSource) is { IsSelected: false } row)
@@ -415,50 +396,6 @@ internal sealed class FinderWindow : Window
             if (RowUnder(args.OriginalSource) is not null) ShowSelectedMenu(list.PointToScreen(args.GetPosition(list)));
             else ShowBackgroundMenu();
         };
-        list.AllowDrop = true;
-        list.DragOver += (_, args) =>
-        {
-            args.Effects = DragTarget(args) is { } target && DropPaths(args, target).Length != 0
-                ? DropEffect(args) : DragDropEffects.None;
-            args.Handled = true;
-        };
-        list.Drop += async (_, args) =>
-        {
-            args.Handled = true;
-            if (DragTarget(args) is not { } target || DropPaths(args, target) is not { Length: > 0 } paths) return;
-            args.Effects = DropEffect(args);
-            if (args.Effects != DragDropEffects.None)
-                await TransferFiles(paths, target, args.Effects == DragDropEffects.Move);
-        };
-    }
-
-    private string? DragTarget(DragEventArgs args) => !copying && args.Data.GetDataPresent(DataFormats.FileDrop)
-        && !args.Data.GetDataPresent(FinderDragFormat)
-        ? RowUnder(args.OriginalSource) is { Content: FinderEntry { IsDirectory: true } item } ? item.Path : folder
-        : null;
-
-    private static string[] DropPaths(DragEventArgs args, string target)
-    {
-        try
-        {
-            if (args.Data.GetData(DataFormats.FileDrop) is not string[] paths) return [];
-            string destination = Path.TrimEndingDirectorySeparator(target);
-            return paths.Where(Path.IsPathFullyQualified).Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)))
-                .Where(path => !destination.Equals(path, StringComparison.OrdinalIgnoreCase) &&
-                    !destination.StartsWith(Path.EndsInDirectorySeparator(path) ? path : path + Path.DirectorySeparatorChar,
-                        StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(Path.GetDirectoryName(path), destination, StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        }
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or ExternalException) { return []; }
-    }
-
-    private static DragDropEffects DropEffect(DragEventArgs args)
-    {
-        if ((args.KeyStates & DragDropKeyStates.ShiftKey) != 0 && (args.AllowedEffects & DragDropEffects.Move) != 0)
-            return DragDropEffects.Move;
-        if ((args.AllowedEffects & DragDropEffects.Copy) != 0) return DragDropEffects.Copy;
-        return args.AllowedEffects & DragDropEffects.Move;
     }
 
     private ListViewItem? RowUnder(object source) => source is DependencyObject visual
@@ -667,6 +604,7 @@ internal sealed class FinderWindow : Window
             var crumb = Button(Text(string.IsNullOrEmpty(name) ? path : name, 11, Secondary), path,
                 () => Navigate(path), Brushes.Transparent, 6);
             crumb.MaxWidth = 160;
+            crumb.Tag = path;
             pathBar.Children.Add(crumb);
         }
     }
@@ -762,6 +700,7 @@ internal sealed class FinderWindow : Window
     private void UpdateStatus()
     {
         if (chooseFolder is not null) chooseFolder.IsEnabled = folder is not null;
+        if (dropHighlight is not null || copying) return;
         int count = list.Items.Count;
         string total = search.Text.Length == 0 ? $"Объектов: {count}" : $"Найдено: {count} из {entries.Length}";
         status.Text = list.SelectedItems.Count == 0 ? total : $"{total}   ·   Выбрано: {list.SelectedItems.Count}";
@@ -912,7 +851,11 @@ internal sealed class FinderWindow : Window
             }
             if (!closed)
             {
-                if (copied) Reload();
+                if (copied)
+                {
+                    status.Text = move ? $"Перемещено: {paths.Length}" : $"Скопировано: {paths.Length}";
+                    Reload();
+                }
                 else status.Text = move ? "Перемещение не завершено" : "Копирование не завершено";
             }
         }

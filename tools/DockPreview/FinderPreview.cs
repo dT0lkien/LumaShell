@@ -27,7 +27,11 @@ internal static class FinderPreview
         {
             try
             {
-                if (output is null) VerifyWindowControls();
+                if (output is null)
+                {
+                    VerifyWindowControls();
+                    VerifyFileDrop();
+                }
                 else RunVerification(application, assembly, output);
             }
             catch (Exception error) { failure = error; }
@@ -149,6 +153,120 @@ internal static class FinderPreview
             Console.WriteLine("Both caption controls painted within the disc at idle, hover and press, and ignored release outside.");
         }
         finally { window.Close(); }
+    }
+
+    private static void VerifyFileDrop()
+    {
+        using var workspace = new DropWorkspace();
+        var finder = new LumaShell.FinderWindow();
+        var sourcePanel = new Border { Background = Brushes.SlateGray, Child = new TextBlock { Text = "File drag fixture" } };
+        var external = new Window
+        {
+            Left = SystemParameters.WorkArea.Left + 12, Top = SystemParameters.WorkArea.Top + 76,
+            Width = 150, Height = 130, Content = sourcePanel, WindowStartupLocation = WindowStartupLocation.Manual
+        };
+        if (!GetCursorPos(out var previous)) throw new InvalidOperationException("Could not read the cursor position.");
+        try
+        {
+            finder.OpenFolder(workspace.Browse);
+            var list = Find<ListView>(finder)!;
+            PumpUntil(() => list.Items.Count == 2 && list.ItemContainerGenerator.ContainerFromIndex(1) is ListViewItem,
+                "loading the drop fixtures");
+            var source = (ListViewItem)list.ItemContainerGenerator.ContainerFromIndex(1);
+            var folder = (ListViewItem)list.ItemContainerGenerator.ContainerFromIndex(0);
+            var filePoint = source.PointToScreen(new Point(85, 13));
+            var folderPoint = folder.PointToScreen(new Point(108, 13));
+            var destination = Path.Combine(workspace.Target, Path.GetFileName(workspace.Original));
+
+            DragWithMouse(filePoint, folderPoint, move: false);
+            PumpUntil(() => File.Exists(destination), "copying a Finder file into a folder by dragging");
+            if (!File.Exists(workspace.Original) || File.ReadAllText(destination) != "internal")
+                throw new InvalidOperationException("The copy drop did not preserve the source and contents.");
+
+            // Use a different file for the move so no conflict confirmation is necessary.
+            string moving = Path.Combine(workspace.Browse, "На перенос.txt");
+            File.WriteAllText(moving, "move");
+            PumpUntil(() => list.Items.Count == 3 && list.ItemContainerGenerator.ContainerFromIndex(2) is ListViewItem,
+                "displaying the second drag source");
+            var movingItem = list.Items.OfType<LumaShell.FinderEntry>().Single(item => item.Path == moving);
+            var movingRow = (ListViewItem)list.ItemContainerGenerator.ContainerFromItem(movingItem);
+            DragWithMouse(movingRow.PointToScreen(new Point(85, 13)), folderPoint, move: true);
+            PumpUntil(() => !File.Exists(moving) && File.Exists(Path.Combine(workspace.Target, Path.GetFileName(moving))),
+                "moving a Finder file into a folder by Shift-dragging");
+
+            var incoming = LumaShell.FinderFiles.FileDropData(workspace.External);
+            sourcePanel.PreviewMouseMove += (_, e) =>
+            {
+                if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
+                    DragDrop.DoDragDrop(sourcePanel, incoming, DragDropEffects.Copy);
+            };
+            external.Show();
+            finder.Activate();
+            external.Activate();
+            PumpUntil(() => external.IsActive, "activating the separate OLE drop source");
+            var origin = sourcePanel.PointToScreen(new Point(25, 20));
+            var emptyArea = list.PointToScreen(new Point(Math.Min(420, list.ActualWidth / 2), 180));
+            DragWithMouse(origin, emptyArea, move: false);
+            string received = Path.Combine(workspace.Browse, Path.GetFileName(workspace.External));
+            PumpUntil(() => File.Exists(received), "receiving an external file on empty Finder space");
+            if (File.ReadAllText(received) != "external" || !File.Exists(workspace.External) ||
+                LumaShell.FinderWindow.ReadDropPaths(LumaShell.FinderFiles.FileDropData(workspace.Browse), workspace.Target).Length != 0)
+                throw new InvalidOperationException("The external drop or rejection of recursive drops failed.");
+            Console.WriteLine("Finder accepted OLE file drops from its rows and an external window, copied or moved, and rejected a recursive drop.");
+        }
+        finally
+        {
+            external.Close();
+            finder.Close();
+            SetCursorPos(previous.X, previous.Y);
+        }
+    }
+
+    private static void DragWithMouse(Point from, Point to, bool move)
+    {
+        SetCursorPos((int)from.X, (int)from.Y);
+        mouse_event(0x0002, 0, 0, 0, 0);
+        // DoDragDrop runs a nested OLE loop. The input sequence must also progress during this loop.
+        var gesture = Task.Run(() =>
+        {
+            try
+            {
+                Thread.Sleep(160);
+                SetCursorPos((int)from.X + 20, (int)from.Y);
+                Thread.Sleep(180);
+                if (move) keybd_event(0x10, 0, 0, 0);
+                SetCursorPos((int)to.X, (int)to.Y);
+                Thread.Sleep(250);
+            }
+            finally
+            {
+                mouse_event(0x0004, 0, 0, 0, 0);
+                if (move) keybd_event(0x10, 0, 2, 0);
+            }
+        });
+        PumpUntil(() => gesture.IsCompleted, "sending a drag gesture");
+        gesture.GetAwaiter().GetResult();
+    }
+
+    private sealed class DropWorkspace : IDisposable
+    {
+        private readonly string root = Directory.CreateTempSubdirectory("Luma-Drop-").FullName;
+        internal string Browse { get; }
+        internal string Target { get; }
+        internal string Original { get; }
+        internal string External { get; }
+
+        internal DropWorkspace()
+        {
+            Browse = Directory.CreateDirectory(Path.Combine(root, "Открытая папка")).FullName;
+            Target = Directory.CreateDirectory(Path.Combine(Browse, "Подпапка")).FullName;
+            Original = Path.Combine(Browse, "Копия.txt");
+            External = Path.Combine(root, "Извне.txt");
+            File.WriteAllText(Original, "internal");
+            File.WriteAllText(External, "external");
+        }
+
+        public void Dispose() => Directory.Delete(root, recursive: true);
     }
 
     private static Button VerifyCaption(Window window, string label)
