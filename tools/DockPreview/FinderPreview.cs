@@ -19,13 +19,17 @@ using System.Windows.Threading;
 
 internal static class FinderPreview
 {
-    internal static void VerifyAndRender(Assembly assembly, string output)
+    internal static void VerifyAndRender(Assembly assembly, string? output)
     {
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         Exception? failure = null;
         application.Dispatcher.BeginInvoke(new Action(() =>
         {
-            try { RunVerification(application, assembly, output); }
+            try
+            {
+                if (output is null) VerifyWindowControls();
+                else RunVerification(application, assembly, output);
+            }
             catch (Exception error) { failure = error; }
             finally { application.Shutdown(failure is null ? 0 : 1); }
         }));
@@ -87,7 +91,6 @@ internal static class FinderPreview
             if (list.Items.Count != 2) throw new InvalidOperationException("Folder search did not filter the displayed rows.");
             search.Clear();
 
-            VerifyCaption(window, "Закрыть окно");
             VerifyShellMenu(assembly, desktop, sandbox);
             VerifyLauncherMenu(assembly, Path.Combine(sandbox, "Sample.exe"));
             VerifyTrayActions(assembly);
@@ -103,9 +106,7 @@ internal static class FinderPreview
             type.GetMethod("ToggleQuickLook", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
             var preview = application.Windows.OfType<Window>().Single(candidate => candidate.Owner == window);
             PumpUntil(() => Find<TextBox>(preview, box => box.IsReadOnly && box.Text == "Luma") is not null, "rendering Quick Look");
-            var previewClose = VerifyCaption(preview, "Закрыть быстрый просмотр");
-            previewClose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            if (preview.IsVisible) throw new InvalidOperationException("The preview close control did not close its window.");
+            preview.Close();
             VerifyPdfPreview(assembly, window, projects, list);
             VerifyPhotoPreview(window, desktop, list);
             open.Invoke(window, [desktop]);
@@ -130,6 +131,24 @@ internal static class FinderPreview
             PumpUntil(() => decoders.CurrentCount == 3, "finishing thumbnail reads before cleanup");
             Directory.Delete(sandbox, recursive: true);
         }
+    }
+
+    private static void VerifyWindowControls()
+    {
+        var window = new LumaShell.FinderWindow();
+        try
+        {
+            window.Show();
+            VerifyCaption(window, "Закрыть окно");
+            var entry = new LumaShell.FinderEntry("Папка", Path.GetTempPath(), true, null, null, "", new DrawingImage());
+            var preview = new LumaShell.QuickLook(window, entry);
+            preview.Show();
+            var close = VerifyCaption(preview, "Закрыть быстрый просмотр");
+            close.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (preview.IsVisible) throw new InvalidOperationException("The preview close control did not close its window.");
+            Console.WriteLine("Both caption controls painted within the disc at idle, hover and press, and ignored release outside.");
+        }
+        finally { window.Close(); }
     }
 
     private static Button VerifyCaption(Window window, string label)

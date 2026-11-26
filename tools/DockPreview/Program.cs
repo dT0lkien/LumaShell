@@ -15,9 +15,9 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        if (args.Length > 0 && args[0] == "--verify-finder")
+        if (args.Length > 0 && args[0] is "--verify-finder" or "--verify-caption")
         {
-            try { FinderPreview.VerifyAndRender(Assembly.Load("LumaShell"), args[1]); }
+            try { FinderPreview.VerifyAndRender(Assembly.Load("LumaShell"), args[0] == "--verify-finder" ? args[1] : null); }
             catch (Exception error)
             {
                 Console.Error.WriteLine(error);
@@ -28,7 +28,8 @@ internal static class Program
         if (args.Length > 1)
         {
             // Run each WPF renderer in its own process, with its own Dispatcher lifetime.
-            if (RunAndReportWindowsErrors(args[0])) RunAndReportWindowsErrors("--verify-finder", args[1]);
+            if (RunAndReportWindowsErrors(args[0]) && RunAndReportWindowsErrors("--verify-caption"))
+                RunAndReportWindowsErrors("--verify-finder", args[1]);
             return;
         }
         RenderDock(args.Length == 0 ? "Dock-Preview.png" : args[0]);
