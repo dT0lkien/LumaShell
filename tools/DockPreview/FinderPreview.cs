@@ -171,6 +171,8 @@ internal static class FinderPreview
             PumpUntil(() => button.IsPressed, "pressing the window control");
             if (CheckPaintedDisc(content, crop, background, "pressed").SequenceEqual(hover))
                 throw new InvalidOperationException("The caption disc did not show a pressed state.");
+            SetCursorPos((int)outside.X, (int)outside.Y);
+            PumpUntil(() => !button.IsPressed, "dragging the pointer outside the window control");
         }
         finally
         {

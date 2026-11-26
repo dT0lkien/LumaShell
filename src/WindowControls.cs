@@ -49,6 +49,14 @@ internal static class WindowControls
         };
         WindowChrome.SetIsHitTestVisibleInChrome(button, true);
         AutomationProperties.SetName(button, label);
+        button.PreviewMouseLeftButtonUp += (_, args) =>
+        {
+            if (button.IsMouseCaptured && !new Rect(button.RenderSize).Contains(args.GetPosition(button)))
+            {
+                button.ReleaseMouseCapture();
+                args.Handled = true;
+            }
+        };
         button.Click += (_, _) => click();
         return button;
     }
